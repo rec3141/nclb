@@ -1,0 +1,24 @@
+name: nclb
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # Python core
+  - python>=3.10
+  - numpy>=1.24
+  - scipy>=1.10
+  - scikit-learn>=1.2
+  - biopython>=1.81
+
+  # Bioinformatics tools (Elder investigations)
+  - blast>=2.15
+  - mafft>=7.520
+  - fasttree>=2.1
+  - minimap2>=2.26
+  - samtools>=1.18
+
+  # pip-only packages
+  - pip
+  - pip:
+    - anthropic>=0.40
+    - openai>=1.0

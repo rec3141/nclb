@@ -192,13 +192,13 @@ nclb/
 
 - **MGE integration** — geNomad virus/plasmid + CheckV quality data flows into identity cards. Proviruses are flagged as Travelers. Conversation prompts include biological rules about MGE composition divergence.
 
+- **Elder orchestrator** — Complete. `nclb_elders.py` investigates communities with SCG redundancy using 6 evidence types (taxonomy, composition, coverage, MGE status, graph connectivity, ANI). Renders verdicts: ecotype variation, contamination, MGE, or uncertain.
+
+- **Kaiju taxonomy integration** — Complete. `load_kaiju_taxonomy()` in `identity.py` populates per-contig ancestry from the Kaiju Nextflow module output. Auto-discovered by all three gathering scripts.
+
+- **Nextflow integration** — Complete. Four processes (NCLB_GATHER → NCLB_CONVERSE, NCLB_ELDERS → NCLB_INTEGRATE) in `modules/refinement.nf`. Enabled with `--run_nclb --nclb_dir /path/to/nclb`. Conda env at `envs/nclb.yml`.
+
 ### Not Yet Implemented
-
-- **Elder orchestrator script** (`bin/nclb_elders.py`) — The `elders.py` library has all the tools but no orchestrator script to run Elder investigations on communities with SCG redundancy. This is the phase that investigates whether "contamination" is actually ecotype variation.
-
-- **Kaiju taxonomy integration** — The Kaiju Nextflow module is built (`modules/taxonomy.nf`) but the NCLB identity loader (`load_kaiju_taxonomy()`) hasn't been added to `identity.py` yet. Once wired, it populates the `ancestry` field on each contig.
-
-- **Nextflow integration** — NCLB is not yet wired into the Nextflow pipeline as processes. Currently run as standalone scripts.
 
 - **Traveler multi-membership** — The data model supports it (`contig_membership.tsv` has type column) but the conversation prompts don't yet explicitly handle dual-citizenship placement for prophages/plasmids.
 
