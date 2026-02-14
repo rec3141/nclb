@@ -94,6 +94,9 @@ def run_tool_conversation(
 
     The LLM calls tools to investigate, we execute and return results,
     until it produces a final text response.
+
+    When approaching the round limit, injects a nudge asking the model to
+    produce its final JSON decision, then forces a tool-free final round.
     """
     messages = [
         {"role": "system", "content": system},
@@ -101,16 +104,47 @@ def run_tool_conversation(
     ]
 
     tool_calls_total = 0
+    nudged = False
+    # Reserve last 3 rounds for winding down: nudge at -3, remind at -2,
+    # force text at -1
+    wind_down_start = max(max_rounds - 3, max_rounds // 2)
 
     for round_num in range(max_rounds):
+        # Wind-down phase: nudge the model to produce decisions
+        if round_num == wind_down_start and not nudged:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "You have used most of your investigation budget. "
+                    "Please finish your investigation and respond with "
+                    "your final JSON decision now. Remember the required "
+                    "format from your instructions."
+                ),
+            })
+            nudged = True
+        elif round_num == max_rounds - 2 and nudged:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "This is your LAST chance to investigate. On the next "
+                    "round you must produce your JSON response. Respond "
+                    "with the JSON now if you are ready."
+                ),
+            })
+
+        # On the final round, don't offer tools — force a text response
+        is_final_round = (round_num == max_rounds - 1)
+        call_kwargs = dict(
+            model=model,
+            messages=messages,
+            max_tokens=4096,
+            temperature=0.3,
+        )
+        if not is_final_round:
+            call_kwargs["tools"] = CONTIG_TOOLS_OPENAI
+
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=CONTIG_TOOLS_OPENAI,
-                max_tokens=4096,
-                temperature=0.3,
-            )
+            response = client.chat.completions.create(**call_kwargs)
         except Exception as e:
             if log_fn:
                 log_fn(f"    [ERROR] API call failed: {e}")
@@ -165,6 +199,31 @@ def run_tool_conversation(
                 parsed["_tool_calls"] = tool_calls_total
                 return parsed
             except (json.JSONDecodeError, ValueError):
+                # Model produced text but not valid JSON (e.g. XML tool
+                # calls when tools were removed). If this is the forced
+                # final round, retry once asking for pure JSON.
+                if is_final_round:
+                    messages.append({"role": "assistant", "content": text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "That was not valid JSON. Please respond with "
+                            "ONLY a JSON object matching the required format. "
+                            "No tool calls, no XML, no commentary — just the "
+                            "JSON object."
+                        ),
+                    })
+                    try:
+                        retry = client.chat.completions.create(
+                            model=model, messages=messages,
+                            max_tokens=4096, temperature=0.1,
+                        )
+                        retry_text = retry.choices[0].message.content or ""
+                        parsed = parse_json_response(retry_text)
+                        parsed["_tool_calls"] = tool_calls_total
+                        return parsed
+                    except Exception:
+                        pass
                 return {"raw_response": text, "_tool_calls": tool_calls_total}
 
         # Empty response — shouldn't happen
@@ -172,7 +231,34 @@ def run_tool_conversation(
             log_fn(f"    [WARNING] Empty response at round {round_num}")
         break
 
-    # Exhausted rounds — extract last text if any
+    # Exhausted rounds — try one final forced-text round without tools
+    if log_fn:
+        log_fn(f"    [INFO] Forcing final response after {tool_calls_total} tool calls")
+    messages.append({
+        "role": "user",
+        "content": (
+            "Investigation complete. You MUST respond now with your final "
+            "JSON decision. No more tool calls. Produce ONLY the JSON object "
+            "matching the required format from your instructions."
+        ),
+    })
+    try:
+        final = client.chat.completions.create(
+            model=model, messages=messages,
+            max_tokens=4096, temperature=0.1,
+        )
+        text = final.choices[0].message.content or ""
+        if text:
+            try:
+                parsed = parse_json_response(text)
+                parsed["_tool_calls"] = tool_calls_total
+                return parsed
+            except (json.JSONDecodeError, ValueError):
+                return {"raw_response": text, "_tool_calls": tool_calls_total}
+    except Exception as e:
+        if log_fn:
+            log_fn(f"    [ERROR] Final forced response failed: {e}")
+
     return {"error": "max_rounds_exhausted", "_tool_calls": tool_calls_total}
 
 
@@ -373,6 +459,7 @@ def main():
     integron_path = mge_dir / "integrons" / "integrons.tsv"
     island_path = mge_dir / "genomic_islands" / "genomic_islands.tsv"
     msf_path = mge_dir / "macsyfinder" / "all_systems.tsv"
+    df_path = mge_dir / "defensefinder" / "genes.tsv"
     prokka_gff_path = None
     annotation_dir = results / "annotation" / "prokka"
     if annotation_dir.exists():
@@ -396,10 +483,22 @@ def main():
         integron_path=integron_path if integron_path.exists() else None,
         genomic_island_path=island_path if island_path.exists() else None,
         macsyfinder_path=msf_path if msf_path.exists() else None,
+        defensefinder_path=df_path if df_path.exists() else None,
         prokka_gff_path=prokka_gff_path,
     )
     adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
-    log(f"[INFO] Loaded {len(identities):,} contigs, {len(communities)} communities")
+    log(f"[INFO] Loaded {len(identities):,} contigs, {len(communities)} DAS Tool communities")
+
+    # Seed additional communities from binner agreement
+    from nclb.identity import seed_communities_from_binner_agreement
+    new_comms, binner_assigned = seed_communities_from_binner_agreement(identities)
+    if new_comms:
+        for contig, comm_name in binner_assigned.items():
+            identities[contig].community = comm_name
+            identities[contig].membership_type = "core"
+        communities.update(new_comms)
+        log(f"[INFO] Seeded {len(new_comms)} binner-agreement communities ({len(binner_assigned):,} contigs)")
+    log(f"[INFO] Total: {len(identities):,} contigs, {len(communities)} communities")
 
     # Compute valence for housed contigs
     from nclb.valence import contig_valence as cv
@@ -415,6 +514,20 @@ def main():
         comm.tnf_coherence = tnf_coherence(members)
         comm.coverage_correlation = coverage_coherence(members)
         comm.graph_connectivity = graph_connectivity(comm.members, adjacency)
+
+    # Load landscape data (UMAP coordinates) if available
+    landscape_path = binning_dir / "nclb" / "landscape.json"
+    if landscape_path.exists():
+        from nclb.landscape import load_landscape
+        landscape_data = load_landscape(landscape_path)
+        for name, lr in landscape_data.items():
+            if name in identities:
+                identities[name].landscape_x = lr.x
+                identities[name].landscape_y = lr.y
+                identities[name].landscape_cluster = lr.cluster
+                identities[name].landscape_cluster_cx = lr.cluster_cx
+                identities[name].landscape_cluster_cy = lr.cluster_cy
+        log(f"[INFO] Loaded landscape data for {len(landscape_data):,} contigs")
 
     # Load gathering.json for pre-computed resonance and uneasy member data
     gathering = None

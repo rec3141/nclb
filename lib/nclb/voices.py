@@ -87,6 +87,13 @@ class ContigToolkit:
             "gifts": c.gifts,
             "marker_genes": c.marker_genes,
         }
+        # Landscape position (UMAP coordinates + cluster centroid)
+        if c.landscape_x != 0.0 or c.landscape_y != 0.0:
+            d["position"] = [round(c.landscape_x, 2), round(c.landscape_y, 2)]
+            if c.landscape_cluster >= 0:
+                d["landscape_cluster"] = c.landscape_cluster
+                d["cluster_centroid"] = [round(c.landscape_cluster_cx, 2),
+                                         round(c.landscape_cluster_cy, 2)]
         # MGE annotations
         if c.mge_type:
             d["mge_type"] = c.mge_type
@@ -123,6 +130,10 @@ class ContigToolkit:
         if c.has_secretion_system:
             d["has_secretion_system"] = True
             d["secretion_systems"] = c.secretion_systems
+        # Defense system annotations
+        if c.has_defense_system:
+            d["has_defense_system"] = True
+            d["defense_systems"] = c.defense_systems
         return d
 
     def who_are_my_neighbors(self, contig_name: str) -> dict:

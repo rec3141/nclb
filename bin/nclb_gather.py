@@ -22,10 +22,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 import numpy as np
 
-from nclb.identity import build_identities, load_gfa_graph
+from nclb.identity import build_identities, load_gfa_graph, seed_communities_from_binner_agreement
 from nclb.valence import contig_valence, community_harmony, tnf_coherence, coverage_coherence
 from nclb.graph import graph_connectivity, shared_edge_communities
 from nclb.resonance import ResonanceMap
+from nclb.landscape import (
+    compute_landscape, save_landscape, plot_landscape, landscape_summary,
+    name_communities,
+)
 
 
 def find_binner_paths(binning_dir: Path) -> dict[str, Path]:
@@ -83,6 +87,15 @@ def serialize_identity(c) -> dict:
         d["checkv_quality"] = c.checkv_quality
         d["viral_genes"] = c.viral_genes
         d["host_genes"] = c.host_genes
+    # Defense system annotations
+    if c.has_defense_system:
+        d["has_defense_system"] = True
+        d["defense_systems"] = c.defense_systems
+    # Landscape position
+    if c.landscape_x != 0.0 or c.landscape_y != 0.0:
+        d["position"] = [round(c.landscape_x, 4), round(c.landscape_y, 4)]
+        if c.landscape_cluster >= 0:
+            d["landscape_cluster"] = c.landscape_cluster
     return d
 
 
@@ -231,6 +244,13 @@ def main():
     else:
         msf_path = None
 
+    # Optional DefenseFinder defense systems
+    df_path = mge_dir / "defensefinder" / "genes.tsv"
+    if df_path.exists():
+        log(f"[INFO] Found DefenseFinder data: {df_path}")
+    else:
+        df_path = None
+
     # Optional Prokka GFF (needed for MacSyFinder locus tag → contig mapping)
     prokka_gff_path = None
     annotation_dir = results / "annotation" / "prokka"
@@ -265,6 +285,7 @@ def main():
         integron_path=integron_path,
         genomic_island_path=island_path,
         macsyfinder_path=msf_path,
+        defensefinder_path=df_path,
         prokka_gff_path=prokka_gff_path,
     )
     log(f"[INFO] {len(identities):,} contigs, {len(communities)} communities")
@@ -273,6 +294,26 @@ def main():
     log("[INFO] Parsing assembly graph...")
     adjacency = load_gfa_graph(required_files["Assembly graph"])
     log(f"[INFO] {len(adjacency):,} contigs with graph connections")
+
+    # --- Seed communities from binner agreement ---
+    log("[INFO] Seeding communities from binner agreement (3+ majority)...")
+    new_comms, binner_assigned = seed_communities_from_binner_agreement(identities)
+    if new_comms:
+        # Update contig assignments
+        for contig, comm_name in binner_assigned.items():
+            identities[contig].community = comm_name
+            identities[contig].membership_type = "core"
+        # Merge into communities
+        communities.update(new_comms)
+        log(f"[INFO] Seeded {len(new_comms)} new communities from binner agreement "
+            f"({len(binner_assigned):,} contigs)")
+        # Break down by agreement level
+        from collections import Counter as _Counter
+        levels = _Counter(c.source_binner for c in new_comms.values())
+        for level, count in sorted(levels.items()):
+            log(f"  {level}: {count} communities")
+    else:
+        log("[INFO] No additional communities seeded from binner agreement")
 
     # --- Compute community harmony metrics ---
     log("[INFO] Computing community harmony...")
@@ -322,6 +363,47 @@ def main():
                 }
                 for c in candidates
             ]
+
+    # --- Compute landscape (UMAP + neighborhoods + HDBSCAN) ---
+    log("[INFO] Computing landscape (UMAP embedding)...")
+    landscape_data = compute_landscape(identities)
+    if landscape_data:
+        # Assign landscape positions to identities
+        for name, lr in landscape_data.items():
+            if name in identities:
+                identities[name].landscape_x = lr.x
+                identities[name].landscape_y = lr.y
+                identities[name].landscape_cluster = lr.cluster
+                identities[name].landscape_cluster_cx = lr.cluster_cx
+                identities[name].landscape_cluster_cy = lr.cluster_cy
+
+        # Save landscape for reuse by converse
+        landscape_path = output_path.parent / "landscape.json"
+        save_landscape(landscape_data, landscape_path)
+        log(f"[INFO] Saved landscape data to {landscape_path}")
+
+        # Summary
+        ls = landscape_summary(landscape_data, identities)
+        log(f"[INFO] Landscape: {ls['n_contigs_mapped']:,} contigs, "
+            f"{ls['n_clusters']} clusters, {ls['n_unclustered']:,} unclustered")
+    else:
+        ls = None
+        log("[WARNING] Could not compute landscape (too few contigs)")
+
+    # --- Name communities ---
+    log("[INFO] Naming communities...")
+    community_display_names = name_communities(sorted(communities.keys()))
+    for internal, display in sorted(community_display_names.items(),
+                                     key=lambda x: communities[x[0]].total_size,
+                                     reverse=True):
+        log(f"  {display:25s} <- {internal}")
+
+    # Generate landscape visualization (after naming)
+    if landscape_data:
+        plot_path = output_path.parent / "landscape.png"
+        plot_landscape(landscape_data, identities, communities, plot_path,
+                       community_names=community_display_names)
+        log(f"[INFO] Saved landscape plot to {plot_path}")
 
     # --- Find inter-community graph bridges ---
     log("[INFO] Finding inter-community graph connections...")
@@ -382,12 +464,17 @@ def main():
         "fraction_classified": n_classified / len(identities) if identities else 0,
     }
 
+    # Landscape stats
+    if ls:
+        assembly_stats["landscape"] = ls
+
     # --- Assemble output ---
     log("[INFO] Serializing gathering data...")
     gathering = {
-        "version": "0.1.0",
+        "version": "0.2.0",
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "assembly_stats": assembly_stats,
+        "community_names": community_display_names,
         "communities": {
             name: serialize_community(comm, harmony_reports[name])
             for name, comm in communities.items()
@@ -471,6 +558,12 @@ def main():
     log(f"    voiceless:   {voiceless:>8,}")
     log(f"    graph-linked:{graph_connected:>8,}")
     log(f"")
+    n_dastool = sum(1 for c in communities.values() if not c.source_binner.startswith("binner-agreement"))
+    n_seeded = len(communities) - n_dastool
+    if n_seeded > 0:
+        log(f"    DAS Tool:    {n_dastool:>8}")
+        log(f"    Binner-seeded:{n_seeded:>7}")
+    log(f"")
     log(f"  Elder hierarchy:")
     for rank in ["contigsattva", "sage", "full", "apprentice", "none"]:
         n = elder_counts.get(rank, 0)
@@ -489,18 +582,21 @@ def main():
             log(f"    Provirus:  {mge['provirus']:>6} ({mge['provirus_housed']} housed)")
         log(f"")
 
-    # Integron / island / secretion stats
+    # Integron / island / secretion / defense stats
     n_integron = sum(1 for c in identities.values() if c.has_integron)
     n_island = sum(1 for c in identities.values() if c.has_genomic_island)
     n_secsys = sum(1 for c in identities.values() if c.has_secretion_system)
-    if n_integron or n_island or n_secsys:
-        log(f"  Horizontal gene transfer elements:")
+    n_defense = sum(1 for c in identities.values() if c.has_defense_system)
+    if n_integron or n_island or n_secsys or n_defense:
+        log(f"  Horizontal gene transfer / defense elements:")
         if n_integron:
             log(f"    Integrons:          {n_integron:>6} contigs")
         if n_island:
             log(f"    Genomic islands:    {n_island:>6} contigs")
         if n_secsys:
             log(f"    Secretion systems:  {n_secsys:>6} contigs")
+        if n_defense:
+            log(f"    Defense systems:    {n_defense:>6} contigs")
         log(f"")
 
     tax = assembly_stats["taxonomy"]
@@ -508,6 +604,20 @@ def main():
         log(f"  Taxonomy (Kaiju):")
         log(f"    Classified:   {tax['classified']:>6} ({100*tax['fraction_classified']:.1f}%)")
         log(f"    Unclassified: {tax['unclassified']:>6}")
+        log(f"")
+
+    if ls:
+        log(f"  Landscape:")
+        log(f"    Mapped:        {ls['n_contigs_mapped']:>6} contigs")
+        log(f"    HDBSCAN:       {ls['n_clusters']:>6} clusters ({ls['n_clustered']:,} contigs)")
+        log(f"    Unclustered:   {ls['n_unclustered']:>6}")
+        if ls["clusters"]:
+            log(f"    Top clusters:")
+            for cl in sorted(ls["clusters"], key=lambda x: -x["total_size"])[:5]:
+                phylum = f" [{cl['top_phylum']}]" if cl["top_phylum"] else ""
+                cx, cy = cl["centroid"]
+                log(f"      cl-{cl['cluster']:>3}: {cl['n_members']:>5} contigs, "
+                    f"{cl['total_size']/1e6:.1f}Mb @ ({cx:.1f}, {cy:.1f}){phylum}")
         log(f"")
 
     total_uneasy = sum(h["n_uneasy"] for h in harmony_reports.values())

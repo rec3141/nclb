@@ -77,6 +77,17 @@ class ContigIdentity:
     secretion_systems: list[dict] = field(default_factory=list)  # [{sys_id, model, wholeness, genes}]
     has_secretion_system: bool = False
 
+    # Defense systems (from DefenseFinder)
+    defense_systems: list[dict] = field(default_factory=list)  # [{sys_id, type, subtype, genes}]
+    has_defense_system: bool = False
+
+    # Landscape position (from UMAP embedding)
+    landscape_x: float = 0.0                          # UMAP x coordinate
+    landscape_y: float = 0.0                          # UMAP y coordinate
+    landscape_cluster: int = -1                       # HDBSCAN cluster (-1 = unclustered)
+    landscape_cluster_cx: float = 0.0                 # cluster centroid x
+    landscape_cluster_cy: float = 0.0                 # cluster centroid y
+
     # Current state
     community: Optional[str] = None                   # current community name
     membership_type: str = "unhoused"                 # core|accessory|traveler|unhoused
@@ -501,14 +512,23 @@ def load_genomic_islands(path: Path) -> dict[str, list[dict]]:
     islands: dict[str, list[dict]] = {}
 
     with open(path) as f:
-        header = f.readline()  # skip header
+        header = f.readline().strip().split("\t")
+        # Detect column layout: may have island_id prefix column
+        try:
+            contig_col = header.index("contig")
+            start_col = header.index("start")
+            end_col = header.index("end")
+        except ValueError:
+            # Fallback: assume contig, start, end
+            contig_col, start_col, end_col = 0, 1, 2
+        n_cols = max(contig_col, start_col, end_col) + 1
         for line in f:
             parts = line.strip().split("\t")
-            if len(parts) < 3:
+            if len(parts) < n_cols:
                 continue
-            contig = parts[0]
-            start = int(parts[1])
-            end = int(parts[2])
+            contig = parts[contig_col]
+            start = int(parts[start_col])
+            end = int(parts[end_col])
             islands.setdefault(contig, []).append({
                 "start": start, "end": end, "length": end - start,
             })
@@ -617,6 +637,99 @@ def map_macsyfinder_to_contigs(
     return result
 
 
+def load_defensefinder(genes_path: Path) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Load DefenseFinder gene-level results.
+
+    The hit_id column contains Prokka locus tags (e.g. HFMBNMNI_00542).
+    We group genes by sys_id and track system type/subtype.
+
+    Returns (gene_hits, systems):
+        gene_hits: {locus_tag: {sys_id, gene_name, type, subtype}}
+        systems: {sys_id: {type, subtype, genes: [gene_name]}}
+    """
+    systems: dict[str, dict] = {}
+    gene_hits: dict[str, dict] = {}
+
+    with open(genes_path) as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            locus_tag = row["hit_id"]
+            gene_name = row["gene_name"]
+            sys_id = row["sys_id"]
+            sys_type = row.get("type", "")
+            sys_subtype = row.get("subtype", "")
+
+            if sys_id not in systems:
+                systems[sys_id] = {
+                    "type": sys_type,
+                    "subtype": sys_subtype,
+                    "genes": [],
+                }
+            systems[sys_id]["genes"].append(gene_name)
+
+            gene_hits[locus_tag] = {
+                "sys_id": sys_id,
+                "gene_name": gene_name,
+                "type": sys_type,
+                "subtype": sys_subtype,
+            }
+
+    return gene_hits, systems
+
+
+def map_defensefinder_to_contigs(
+    gene_hits: dict[str, dict],
+    systems: dict[str, dict],
+    gff_path: Path,
+) -> dict[str, list[dict]]:
+    """Map DefenseFinder locus tags to contigs using Prokka GFF.
+
+    Returns {contig_name: [{sys_id, type, subtype, genes: [gene_name]}]}.
+    """
+    # Build locus_tag -> contig mapping from GFF
+    tag_to_contig: dict[str, str] = {}
+    with open(gff_path) as f:
+        for line in f:
+            if line.startswith("##FASTA"):
+                break
+            if line.startswith("#"):
+                continue
+            parts = line.strip().split("\t")
+            if len(parts) < 9 or parts[2] != "CDS":
+                continue
+            contig = parts[0]
+            attrs = parts[8]
+            for attr in attrs.split(";"):
+                if attr.startswith("ID="):
+                    tag_to_contig[attr[3:]] = contig
+                    break
+
+    # Map systems to contigs
+    contig_systems: dict[str, dict[str, dict]] = {}
+    for locus_tag, hit in gene_hits.items():
+        contig = tag_to_contig.get(locus_tag)
+        if not contig:
+            continue
+        sys_id = hit["sys_id"]
+        if contig not in contig_systems:
+            contig_systems[contig] = {}
+        if sys_id not in contig_systems[contig]:
+            sys_info = systems.get(sys_id, {})
+            contig_systems[contig][sys_id] = {
+                "sys_id": sys_id,
+                "type": sys_info.get("type", hit["type"]),
+                "subtype": sys_info.get("subtype", hit["subtype"]),
+                "genes": [],
+            }
+        contig_systems[contig][sys_id]["genes"].append(hit["gene_name"])
+
+    result: dict[str, list[dict]] = {}
+    for contig, sys_dict in contig_systems.items():
+        result[contig] = list(sys_dict.values())
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Assembly: build all identity cards
 # ---------------------------------------------------------------------------
@@ -637,6 +750,7 @@ def build_identities(
     integron_path: Optional[Path] = None,
     genomic_island_path: Optional[Path] = None,
     macsyfinder_path: Optional[Path] = None,
+    defensefinder_path: Optional[Path] = None,
     prokka_gff_path: Optional[Path] = None,
 ) -> tuple[dict[str, ContigIdentity], dict[str, CommunityProfile]]:
     """Build identity cards for all contigs and community profiles.
@@ -668,6 +782,11 @@ def build_identities(
     if macsyfinder_path and prokka_gff_path:
         gene_hits, systems = load_macsyfinder(macsyfinder_path)
         msf_data = map_macsyfinder_to_contigs(gene_hits, systems, prokka_gff_path)
+
+    df_data: dict[str, list[dict]] = {}
+    if defensefinder_path and prokka_gff_path:
+        df_gene_hits, df_systems = load_defensefinder(defensefinder_path)
+        df_data = map_defensefinder_to_contigs(df_gene_hits, df_systems, prokka_gff_path)
 
     # Build identity cards for every contig that has TNF data
     identities: dict[str, ContigIdentity] = {}
@@ -759,6 +878,12 @@ def build_identities(
             identity.secretion_systems = msf
             identity.has_secretion_system = True
 
+        # Annotate with defense system data
+        dfs = df_data.get(name)
+        if dfs:
+            identity.defense_systems = dfs
+            identity.has_defense_system = True
+
         identities[name] = identity
 
     # Build community profiles
@@ -807,3 +932,146 @@ def build_identities(
         communities[bin_name] = profile
 
     return identities, communities
+
+
+# ---------------------------------------------------------------------------
+# Binner agreement seeding
+# ---------------------------------------------------------------------------
+
+def seed_communities_from_binner_agreement(
+    identities: dict[str, ContigIdentity],
+    max_bin_size: int = 500,
+    min_members: int = 5,
+    min_total_size: int = 100_000,
+) -> tuple[dict[str, CommunityProfile], dict[str, str]]:
+    """Seed new communities from binner co-assignment (3+ out of N majority vote).
+
+    Contigs placed in the same bin by multiple binners are grouped into new
+    seed communities, even if DAS Tool didn't select that bin as consensus.
+
+    Algorithm:
+        1. Start at maximum agreement (all binners agree), work down to 3
+        2. Build composite keys from binner labels for each combination
+        3. Filter: skip mega-bins (>max_bin_size), require ≥min_members and ≥min_total_size
+        4. Higher agreement level takes priority (no double-assignment)
+
+    Returns:
+        (new_communities, assignments) where assignments maps contig→community_name
+    """
+    from itertools import combinations
+
+    # Reconstruct binner assignments from testimony
+    binner_names = sorted(set().union(
+        *(c.testimony.keys() for c in identities.values() if c.testimony)
+    ))
+    n_binners = len(binner_names)
+    if n_binners < 3:
+        return {}, {}
+
+    # Compute bin sizes per binner to filter mega-bins
+    bin_sizes: dict[tuple[str, str], int] = {}
+    for c in identities.values():
+        for binner, label in c.testimony.items():
+            if label is not None:
+                key = (binner, label)
+                bin_sizes[key] = bin_sizes.get(key, 0) + 1
+
+    mega_bins = {k for k, v in bin_sizes.items() if v > max_bin_size}
+
+    # Only consider unhoused contigs
+    unhoused = {name for name, c in identities.items() if c.community is None}
+
+    assigned: dict[str, str] = {}
+    community_members: dict[str, list[str]] = {}
+    community_agreement: dict[str, int] = {}
+    comm_counter = 0
+
+    # Work from highest agreement to lowest
+    for k in range(n_binners, 2, -1):  # e.g., 5, 4, 3
+        remaining = unhoused - set(assigned.keys())
+        if not remaining:
+            break
+
+        for combo in combinations(binner_names, k):
+            # Build composite key for each remaining contig
+            groups: dict[str, list[str]] = {}
+            for contig in remaining:
+                if contig in assigned:
+                    continue
+                testimony = identities[contig].testimony
+                labels = []
+                skip = False
+                for binner in combo:
+                    label = testimony.get(binner)
+                    if label is None:
+                        skip = True
+                        break
+                    if (binner, label) in mega_bins:
+                        skip = True
+                        break
+                    labels.append(f"{binner}:{label}")
+                if skip:
+                    continue
+                key = "|".join(labels)
+                groups.setdefault(key, []).append(contig)
+
+            # Create communities from qualifying groups
+            for key, members in groups.items():
+                new_members = [c for c in members if c not in assigned]
+                if len(new_members) < min_members:
+                    continue
+                total_size = sum(
+                    identities[c].size for c in new_members if c in identities
+                )
+                if total_size < min_total_size:
+                    continue
+
+                comm_name = f"binner-agree-{k}of{n_binners}_{comm_counter}"
+                community_members[comm_name] = new_members
+                community_agreement[comm_name] = k
+                comm_counter += 1
+                for c in new_members:
+                    assigned[c] = comm_name
+
+    # Build CommunityProfile objects for new communities
+    new_communities: dict[str, CommunityProfile] = {}
+    for comm_name, members in community_members.items():
+        member_ids = [identities[c] for c in members if c in identities]
+        if not member_ids:
+            continue
+
+        member_tnf = np.array([c.tnf for c in member_ids])
+        member_cov = np.array([c.coverage for c in member_ids])
+        member_gc = [c.gc for c in member_ids]
+
+        tnf_centroid = member_tnf.mean(axis=0)
+        mean_coverage = member_cov.mean(axis=0)
+        total_size = sum(c.size for c in member_ids)
+
+        # Compute N50
+        sizes_sorted = sorted([c.size for c in member_ids], reverse=True)
+        cumsum = 0
+        n50 = 0
+        for s in sizes_sorted:
+            cumsum += s
+            if cumsum >= total_size / 2:
+                n50 = s
+                break
+
+        agreement = community_agreement[comm_name]
+
+        profile = CommunityProfile(
+            name=comm_name,
+            source_binner=f"binner-agreement-{agreement}of{n_binners}",
+            members=members,
+            tnf_centroid=tnf_centroid,
+            mean_coverage=mean_coverage,
+            mean_gc=float(np.mean(member_gc)),
+            gc_stdev=float(np.std(member_gc)),
+            total_size=total_size,
+            n50=n50,
+            elder_rank="none",
+        )
+        new_communities[comm_name] = profile
+
+    return new_communities, assigned
