@@ -159,6 +159,17 @@ def main():
     # Taxonomy
     kaiju_path = results / "taxonomy" / "kaiju" / "kaiju_contigs.tsv"
 
+    # Integrons, genomic islands, secretion systems
+    integron_path = mge_dir / "integrons" / "integrons.tsv"
+    island_path = mge_dir / "genomic_islands" / "genomic_islands.tsv"
+    msf_path = mge_dir / "macsyfinder" / "all_systems.tsv"
+    prokka_gff_path = None
+    annotation_dir = results / "annotation" / "prokka"
+    if annotation_dir.exists():
+        gffs = sorted(annotation_dir.glob("*/*.gff")) + sorted(annotation_dir.glob("*.gff"))
+        if gffs:
+            prokka_gff_path = gffs[-1]
+
     identities, communities = build_identities(
         tnf_path=assembly_dir / "tnf.tsv",
         depths_path=mapping_dir / "depths.txt",
@@ -172,6 +183,10 @@ def main():
         plasmid_summary_path=plasmid_path if plasmid_path.exists() else None,
         checkv_quality_path=checkv_path if checkv_path.exists() else None,
         kaiju_taxonomy_path=kaiju_path if kaiju_path.exists() else None,
+        integron_path=integron_path if integron_path.exists() else None,
+        genomic_island_path=island_path if island_path.exists() else None,
+        macsyfinder_path=msf_path if msf_path.exists() else None,
+        prokka_gff_path=prokka_gff_path,
     )
     adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
 

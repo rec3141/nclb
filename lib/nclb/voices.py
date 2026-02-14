@@ -111,6 +111,18 @@ class ContigToolkit:
             d["checkv_quality"] = c.checkv_quality
             d["viral_genes"] = c.viral_genes
             d["host_genes"] = c.host_genes
+        # Integron annotations
+        if c.has_integron:
+            d["has_integron"] = True
+            d["integrons"] = c.integrons
+        # Genomic island annotations
+        if c.has_genomic_island:
+            d["has_genomic_island"] = True
+            d["genomic_islands"] = c.genomic_islands
+        # Secretion / conjugation system annotations
+        if c.has_secretion_system:
+            d["has_secretion_system"] = True
+            d["secretion_systems"] = c.secretion_systems
         return d
 
     def who_are_my_neighbors(self, contig_name: str) -> dict:

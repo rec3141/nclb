@@ -65,6 +65,18 @@ class ContigIdentity:
     host_genes: int = 0                               # CheckV host gene count
     mge_type: Optional[str] = None                    # virus|plasmid|provirus|None
 
+    # Integron annotations (from IntegronFinder)
+    integrons: list[dict] = field(default_factory=list)  # [{id, type, n_attC, n_proteins}]
+    has_integron: bool = False
+
+    # Genomic island annotations (from IslandPath-DIMOB)
+    genomic_islands: list[dict] = field(default_factory=list)  # [{start, end, length}]
+    has_genomic_island: bool = False
+
+    # Secretion / conjugation systems (from MacSyFinder)
+    secretion_systems: list[dict] = field(default_factory=list)  # [{sys_id, model, wholeness, genes}]
+    has_secretion_system: bool = False
+
     # Current state
     community: Optional[str] = None                   # current community name
     membership_type: str = "unhoused"                 # core|accessory|traveler|unhoused
@@ -439,6 +451,172 @@ def load_checkm2(path: Path) -> dict[str, dict]:
     return quality
 
 
+def load_integrons(path: Path) -> dict[str, list[dict]]:
+    """Load IntegronFinder results, grouped by contig.
+
+    Returns {contig_name: [{id, type, n_attC, n_proteins}]}.
+    """
+    integrons: dict[str, list[dict]] = {}
+    current: dict[str, dict] = {}  # integron_id -> accumulator
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = line.strip().split("\t")
+            if len(parts) < 8:
+                continue
+            integron_id = parts[0]
+            contig = parts[1]
+            element_type = parts[7]  # type_elt: protein, attC, attI, Pc, Pi
+
+            key = f"{integron_id}:{contig}"
+            if key not in current:
+                current[key] = {
+                    "id": integron_id, "contig": contig,
+                    "type": parts[13] if len(parts) > 13 else "unknown",  # CALIN, complete, In0
+                    "n_attC": 0, "n_proteins": 0,
+                }
+            if element_type == "attC":
+                current[key]["n_attC"] += 1
+            elif element_type == "protein":
+                current[key]["n_proteins"] += 1
+
+    for key, info in current.items():
+        contig = info["contig"]
+        entry = {"id": info["id"], "type": info["type"],
+                 "n_attC": info["n_attC"], "n_proteins": info["n_proteins"]}
+        integrons.setdefault(contig, []).append(entry)
+
+    return integrons
+
+
+def load_genomic_islands(path: Path) -> dict[str, list[dict]]:
+    """Load IslandPath-DIMOB genomic island predictions.
+
+    Input format: island_id\\tstart\\tend (tab-separated, header line).
+    Island IDs are contig names (islands are regions within contigs).
+    Returns {contig_name: [{start, end, length}]}.
+    """
+    islands: dict[str, list[dict]] = {}
+
+    with open(path) as f:
+        header = f.readline()  # skip header
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) < 3:
+                continue
+            contig = parts[0]
+            start = int(parts[1])
+            end = int(parts[2])
+            islands.setdefault(contig, []).append({
+                "start": start, "end": end, "length": end - start,
+            })
+
+    return islands
+
+
+def load_macsyfinder(path: Path) -> dict[str, list[dict]]:
+    """Load MacSyFinder secretion/conjugation system predictions.
+
+    The hit_id column contains Prokka locus tags (e.g. HFMBNMNI_49108).
+    We need a GFF to map locus tags → contigs, but since all hits are from
+    the same replicon, we group by sys_id and extract the contig from the
+    locus tag position in the assembly.
+
+    Returns {prokka_locus_tag: {sys_id, gene_name, model, wholeness, hit_status}}.
+    Also returns a sys_id-keyed summary for later contig mapping.
+    """
+    # Parse system-level data: group genes by sys_id
+    systems: dict[str, dict] = {}  # sys_id -> {model, wholeness, genes: [gene_name]}
+    gene_hits: dict[str, dict] = {}  # locus_tag -> {sys_id, gene_name, model, wholeness, status}
+
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#") or line.startswith("replicon\t") or not line.strip():
+                continue
+            parts = line.strip().split("\t")
+            if len(parts) < 10:
+                continue
+            locus_tag = parts[1]   # hit_id (Prokka locus tag)
+            gene_name = parts[2]   # gene_name (e.g. T4SS_MOBQ)
+            model = parts[4]       # model_fqn (e.g. CONJScan/Chromosome/MOB)
+            sys_id = parts[5]      # sys_id
+            wholeness = parts[6]   # sys_wholeness
+
+            if sys_id not in systems:
+                systems[sys_id] = {
+                    "model": model, "wholeness": float(wholeness),
+                    "genes": [],
+                }
+            systems[sys_id]["genes"].append(gene_name)
+
+            gene_hits[locus_tag] = {
+                "sys_id": sys_id,
+                "gene_name": gene_name,
+                "model": model,
+                "wholeness": float(wholeness),
+                "status": parts[8] if len(parts) > 8 else "unknown",
+            }
+
+    return gene_hits, systems
+
+
+def map_macsyfinder_to_contigs(
+    gene_hits: dict[str, dict],
+    systems: dict[str, dict],
+    gff_path: Path,
+) -> dict[str, list[dict]]:
+    """Map MacSyFinder locus tags to contigs using Prokka GFF.
+
+    Returns {contig_name: [{sys_id, model, wholeness, genes: [gene_name]}]}.
+    """
+    # Build locus_tag → contig mapping from GFF
+    tag_to_contig: dict[str, str] = {}
+    with open(gff_path) as f:
+        for line in f:
+            if line.startswith("##FASTA"):
+                break
+            if line.startswith("#"):
+                continue
+            parts = line.strip().split("\t")
+            if len(parts) < 9 or parts[2] != "CDS":
+                continue
+            contig = parts[0]
+            attrs = parts[8]
+            # Extract ID from attributes: ID=HFMBNMNI_00001;...
+            for attr in attrs.split(";"):
+                if attr.startswith("ID="):
+                    tag_to_contig[attr[3:]] = contig
+                    break
+
+    # Map systems to contigs
+    contig_systems: dict[str, dict[str, dict]] = {}  # contig -> sys_id -> system_info
+    for locus_tag, hit in gene_hits.items():
+        contig = tag_to_contig.get(locus_tag)
+        if not contig:
+            continue
+        sys_id = hit["sys_id"]
+        if contig not in contig_systems:
+            contig_systems[contig] = {}
+        if sys_id not in contig_systems[contig]:
+            sys_info = systems.get(sys_id, {})
+            contig_systems[contig][sys_id] = {
+                "sys_id": sys_id,
+                "model": sys_info.get("model", hit["model"]),
+                "wholeness": sys_info.get("wholeness", hit["wholeness"]),
+                "genes": [],
+            }
+        contig_systems[contig][sys_id]["genes"].append(hit["gene_name"])
+
+    # Flatten: contig -> list of systems
+    result: dict[str, list[dict]] = {}
+    for contig, sys_dict in contig_systems.items():
+        result[contig] = list(sys_dict.values())
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Assembly: build all identity cards
 # ---------------------------------------------------------------------------
@@ -456,6 +634,10 @@ def build_identities(
     plasmid_summary_path: Optional[Path] = None,
     checkv_quality_path: Optional[Path] = None,
     kaiju_taxonomy_path: Optional[Path] = None,
+    integron_path: Optional[Path] = None,
+    genomic_island_path: Optional[Path] = None,
+    macsyfinder_path: Optional[Path] = None,
+    prokka_gff_path: Optional[Path] = None,
 ) -> tuple[dict[str, ContigIdentity], dict[str, CommunityProfile]]:
     """Build identity cards for all contigs and community profiles.
 
@@ -478,6 +660,14 @@ def build_identities(
 
     # Load taxonomy
     kaiju_data = load_kaiju_taxonomy(kaiju_taxonomy_path) if kaiju_taxonomy_path else {}
+
+    # Load integrons, genomic islands, secretion systems
+    integron_data = load_integrons(integron_path) if integron_path else {}
+    island_data = load_genomic_islands(genomic_island_path) if genomic_island_path else {}
+    msf_data: dict[str, list[dict]] = {}
+    if macsyfinder_path and prokka_gff_path:
+        gene_hits, systems = load_macsyfinder(macsyfinder_path)
+        msf_data = map_macsyfinder_to_contigs(gene_hits, systems, prokka_gff_path)
 
     # Build identity cards for every contig that has TNF data
     identities: dict[str, ContigIdentity] = {}
@@ -550,6 +740,24 @@ def build_identities(
                 # Proviruses are Travelers — integrated in host but viral in nature
                 if community:
                     identity.membership_type = "traveler"
+
+        # Annotate with integron data
+        intg = integron_data.get(name)
+        if intg:
+            identity.integrons = intg
+            identity.has_integron = True
+
+        # Annotate with genomic island data
+        isld = island_data.get(name)
+        if isld:
+            identity.genomic_islands = isld
+            identity.has_genomic_island = True
+
+        # Annotate with secretion/conjugation system data
+        msf = msf_data.get(name)
+        if msf:
+            identity.secretion_systems = msf
+            identity.has_secretion_system = True
 
         identities[name] = identity
 

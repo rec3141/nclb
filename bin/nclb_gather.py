@@ -210,6 +210,36 @@ def main():
         log("[INFO] No Kaiju taxonomy data found")
         kaiju_taxonomy_path = None
 
+    # Optional IntegronFinder integrons
+    integron_path = mge_dir / "integrons" / "integrons.tsv"
+    if integron_path.exists():
+        log(f"[INFO] Found integron data: {integron_path}")
+    else:
+        integron_path = None
+
+    # Optional IslandPath-DIMOB genomic islands
+    island_path = mge_dir / "genomic_islands" / "genomic_islands.tsv"
+    if island_path.exists():
+        log(f"[INFO] Found genomic island data: {island_path}")
+    else:
+        island_path = None
+
+    # Optional MacSyFinder secretion/conjugation systems
+    msf_path = mge_dir / "macsyfinder" / "all_systems.tsv"
+    if msf_path.exists():
+        log(f"[INFO] Found MacSyFinder data: {msf_path}")
+    else:
+        msf_path = None
+
+    # Optional Prokka GFF (needed for MacSyFinder locus tag → contig mapping)
+    prokka_gff_path = None
+    annotation_dir = results / "annotation" / "prokka"
+    if annotation_dir.exists():
+        gffs = sorted(annotation_dir.glob("*/*.gff")) + sorted(annotation_dir.glob("*.gff"))
+        if gffs:
+            prokka_gff_path = gffs[-1]  # use most recent
+            log(f"[INFO] Found Prokka GFF: {prokka_gff_path}")
+
     # Auto-discover binners
     binner_paths = find_binner_paths(binning_dir)
     if not binner_paths:
@@ -232,6 +262,10 @@ def main():
         plasmid_summary_path=plasmid_summary_path,
         checkv_quality_path=checkv_quality_path,
         kaiju_taxonomy_path=kaiju_taxonomy_path,
+        integron_path=integron_path,
+        genomic_island_path=island_path,
+        macsyfinder_path=msf_path,
+        prokka_gff_path=prokka_gff_path,
     )
     log(f"[INFO] {len(identities):,} contigs, {len(communities)} communities")
 
@@ -453,6 +487,20 @@ def main():
             log(f"    Plasmid:   {mge['plasmid']:>6} ({mge['plasmid_housed']} housed)")
         if mge["provirus"]:
             log(f"    Provirus:  {mge['provirus']:>6} ({mge['provirus_housed']} housed)")
+        log(f"")
+
+    # Integron / island / secretion stats
+    n_integron = sum(1 for c in identities.values() if c.has_integron)
+    n_island = sum(1 for c in identities.values() if c.has_genomic_island)
+    n_secsys = sum(1 for c in identities.values() if c.has_secretion_system)
+    if n_integron or n_island or n_secsys:
+        log(f"  Horizontal gene transfer elements:")
+        if n_integron:
+            log(f"    Integrons:          {n_integron:>6} contigs")
+        if n_island:
+            log(f"    Genomic islands:    {n_island:>6} contigs")
+        if n_secsys:
+            log(f"    Secretion systems:  {n_secsys:>6} contigs")
         log(f"")
 
     tax = assembly_stats["taxonomy"]
