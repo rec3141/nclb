@@ -399,8 +399,8 @@ def main():
         help="Base URL for OpenAI-compatible server"
     )
     parser.add_argument(
-        "--model", "-m", type=str, default=None,
-        help="Model name (default: auto-detect from server)"
+        "--model", "-m", type=str, default="qwen/qwen3-coder-30b",
+        help="Model name (default: qwen/qwen3-coder-30b)"
     )
     parser.add_argument(
         "--max-tool-rounds", type=int, default=15,
