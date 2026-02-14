@@ -201,6 +201,15 @@ def main():
         log("[INFO] No CheckV quality data found")
         checkv_quality_path = None
 
+    # Optional Kaiju taxonomy
+    taxonomy_dir = results / "taxonomy"
+    kaiju_taxonomy_path = taxonomy_dir / "kaiju" / "kaiju_contigs.tsv"
+    if kaiju_taxonomy_path.exists():
+        log(f"[INFO] Found Kaiju taxonomy data: {kaiju_taxonomy_path}")
+    else:
+        log("[INFO] No Kaiju taxonomy data found")
+        kaiju_taxonomy_path = None
+
     # Auto-discover binners
     binner_paths = find_binner_paths(binning_dir)
     if not binner_paths:
@@ -222,6 +231,7 @@ def main():
         virus_summary_path=virus_summary_path,
         plasmid_summary_path=plasmid_summary_path,
         checkv_quality_path=checkv_quality_path,
+        kaiju_taxonomy_path=kaiju_taxonomy_path,
     )
     log(f"[INFO] {len(identities):,} contigs, {len(communities)} communities")
 
@@ -330,6 +340,14 @@ def main():
         "provirus_housed": n_provirus_housed,
     }
 
+    # Taxonomy stats
+    n_classified = sum(1 for c in identities.values() if c.ancestry)
+    assembly_stats["taxonomy"] = {
+        "classified": n_classified,
+        "unclassified": len(identities) - n_classified,
+        "fraction_classified": n_classified / len(identities) if identities else 0,
+    }
+
     # --- Assemble output ---
     log("[INFO] Serializing gathering data...")
     gathering = {
@@ -435,6 +453,13 @@ def main():
             log(f"    Plasmid:   {mge['plasmid']:>6} ({mge['plasmid_housed']} housed)")
         if mge["provirus"]:
             log(f"    Provirus:  {mge['provirus']:>6} ({mge['provirus_housed']} housed)")
+        log(f"")
+
+    tax = assembly_stats["taxonomy"]
+    if tax["classified"] > 0:
+        log(f"  Taxonomy (Kaiju):")
+        log(f"    Classified:   {tax['classified']:>6} ({100*tax['fraction_classified']:.1f}%)")
+        log(f"    Unclassified: {tax['unclassified']:>6}")
         log(f"")
 
     total_uneasy = sum(h["n_uneasy"] for h in harmony_reports.values())

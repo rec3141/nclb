@@ -400,6 +400,28 @@ def load_checkv_quality(path: Path) -> dict[str, dict]:
     return quality
 
 
+def load_kaiju_taxonomy(path: Path) -> dict[str, dict]:
+    """Load Kaiju per-contig taxonomy from kaiju_contigs.tsv.
+
+    Format: contig_id  classified_genes  total_genes  fraction_classified  taxon_id  lineage
+    """
+    taxonomy = {}
+    with open(path) as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            lineage = row.get("lineage", "").strip().rstrip(";")
+            if lineage == "Unclassified" or not lineage:
+                continue
+            taxonomy[row["contig_id"]] = {
+                "lineage": lineage,
+                "taxon_id": row.get("taxon_id", ""),
+                "classified_genes": int(row.get("classified_genes", 0)),
+                "total_genes": int(row.get("total_genes", 0)),
+                "fraction_classified": float(row.get("fraction_classified", 0)),
+            }
+    return taxonomy
+
+
 def load_checkm2(path: Path) -> dict[str, dict]:
     """Load CheckM2 quality_report.tsv."""
     quality = {}
@@ -433,6 +455,7 @@ def build_identities(
     virus_summary_path: Optional[Path] = None,
     plasmid_summary_path: Optional[Path] = None,
     checkv_quality_path: Optional[Path] = None,
+    kaiju_taxonomy_path: Optional[Path] = None,
 ) -> tuple[dict[str, ContigIdentity], dict[str, CommunityProfile]]:
     """Build identity cards for all contigs and community profiles.
 
@@ -452,6 +475,9 @@ def build_identities(
     virus_data = load_genomad_viruses(virus_summary_path) if virus_summary_path else {}
     plasmid_data = load_genomad_plasmids(plasmid_summary_path) if plasmid_summary_path else {}
     checkv_data = load_checkv_quality(checkv_quality_path) if checkv_quality_path else {}
+
+    # Load taxonomy
+    kaiju_data = load_kaiju_taxonomy(kaiju_taxonomy_path) if kaiju_taxonomy_path else {}
 
     # Build identity cards for every contig that has TNF data
     identities: dict[str, ContigIdentity] = {}
@@ -487,6 +513,11 @@ def build_identities(
             community=community,
             membership_type=membership_type,
         )
+
+        # Annotate with taxonomy
+        kaiju = kaiju_data.get(name)
+        if kaiju:
+            identity.ancestry = kaiju["lineage"]
 
         # Annotate with MGE data
         vir = virus_data.get(name)

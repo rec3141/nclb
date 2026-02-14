@@ -366,6 +366,9 @@ def main():
     plasmid_path = mge_dir / "genomad" / "plasmid_summary.tsv"
     checkv_path = mge_dir / "checkv" / "quality_summary.tsv"
 
+    # Taxonomy
+    kaiju_path = results / "taxonomy" / "kaiju" / "kaiju_contigs.tsv"
+
     identities, communities = build_identities(
         tnf_path=assembly_dir / "tnf.tsv",
         depths_path=mapping_dir / "depths.txt",
@@ -378,6 +381,7 @@ def main():
         virus_summary_path=virus_path if virus_path.exists() else None,
         plasmid_summary_path=plasmid_path if plasmid_path.exists() else None,
         checkv_quality_path=checkv_path if checkv_path.exists() else None,
+        kaiju_taxonomy_path=kaiju_path if kaiju_path.exists() else None,
     )
     adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
     log(f"[INFO] Loaded {len(identities):,} contigs, {len(communities)} communities")

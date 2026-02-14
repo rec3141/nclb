@@ -150,6 +150,15 @@ def main():
     if not checkm2_path.exists():
         checkm2_path = None
 
+    # MGE data
+    mge_dir = results / "mge"
+    virus_path = mge_dir / "genomad" / "virus_summary.tsv"
+    plasmid_path = mge_dir / "genomad" / "plasmid_summary.tsv"
+    checkv_path = mge_dir / "checkv" / "quality_summary.tsv"
+
+    # Taxonomy
+    kaiju_path = results / "taxonomy" / "kaiju" / "kaiju_contigs.tsv"
+
     identities, communities = build_identities(
         tnf_path=assembly_dir / "tnf.tsv",
         depths_path=mapping_dir / "depths.txt",
@@ -159,6 +168,10 @@ def main():
         consensus_path=binning_dir / "dastool" / "contig2bin.tsv",
         summary_path=binning_dir / "dastool" / "summary.tsv",
         checkm2_path=checkm2_path,
+        virus_summary_path=virus_path if virus_path.exists() else None,
+        plasmid_summary_path=plasmid_path if plasmid_path.exists() else None,
+        checkv_quality_path=checkv_path if checkv_path.exists() else None,
+        kaiju_taxonomy_path=kaiju_path if kaiju_path.exists() else None,
     )
     adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
 
