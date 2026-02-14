@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "nclb"
+version = "0.1.0"
+description = "No Contig Left Behind — animist MAG bin refinement"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-learn>=1.2",
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+elders = [
+    "biopython>=1.81",
+]
+
+[project.scripts]
+nclb-gather = "nclb.cli:gather"
+nclb-converse = "nclb.cli:converse"
+nclb-integrate = "nclb.cli:integrate"
+
+[tool.setuptools.packages.find]
+where = ["lib"]
