@@ -23,7 +23,7 @@ class ResonanceCandidate:
     tnf_similarity: float       # cosine similarity to community centroid
     coverage_correlation: float  # Pearson r with community mean coverage
     graph_edges: int             # number of graph edges to community members
-    voice_agreement: int         # oracles that placed contig near this community
+    binner_agreement: int        # binners that assigned contig near this community
     score: float                 # composite resonance score
 
 
@@ -111,18 +111,18 @@ class ResonanceMap:
             neighbors = set(self.adjacency.get(name, []))
             graph_edges = len(neighbors & member_set)
 
-            # Voice agreement: oracles that placed contig in a bin from the same binner
-            voice_agreement = 0
-            for binner, assignment in contig.testimony.items():
+            # Binner agreement: binners that assigned contig in a bin from the same binner
+            binner_agreement = 0
+            for binner, assignment in contig.binner_assignments.items():
                 if assignment is not None and community.source_binner in assignment:
-                    voice_agreement += 1
+                    binner_agreement += 1
 
             # Composite score
             score = (
                 0.30 * tnf_sim
                 + 0.30 * cov_corr
                 + 0.20 * min(graph_edges / 3.0, 1.0)
-                + 0.20 * (voice_agreement / 5.0)
+                + 0.20 * (binner_agreement / 5.0)
             )
 
             if score >= min_score:
@@ -132,7 +132,7 @@ class ResonanceMap:
                     tnf_similarity=tnf_sim,
                     coverage_correlation=cov_corr,
                     graph_edges=graph_edges,
-                    voice_agreement=voice_agreement,
+                    binner_agreement=binner_agreement,
                     score=score,
                 ))
 

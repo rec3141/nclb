@@ -1,13 +1,13 @@
 """Voices — LLM prompt templates and contig-agent tool definitions.
 
-The contigs speak through Claude. Each conversation round has prompt
+The contigs are represented by LLM agents. Each conversation round has prompt
 templates and tool definitions that let the LLM investigate on behalf
 of contigs and communities.
 
 Model hierarchy (the wisdom of scale):
-  Haiku   — contig voices (Round 2: unhoused speak, Round 3: voiceless clusters)
-  Sonnet  — Elder voices (Round 1: community health, Elder investigations)
-  Opus    — Contigsattva voices (mentoring, dispute mediation, Mediator)
+  Haiku   — contig agents (Round 2: unhoused contigs, Round 3: voiceless clusters)
+  Sonnet  — Elder agents (Round 1: community health, Elder investigations)
+  Opus    — Contigsattva agents (mentoring, dispute mediation, Mediator)
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from scipy.spatial.distance import cosine as cosine_distance
 from scipy.stats import pearsonr
 
 from .identity import ContigIdentity, CommunityProfile
-from .valence import contig_valence, tnf_coherence, coverage_coherence
+from .valence import contig_fit_score, tnf_coherence, coverage_coherence
 from .graph import graph_connectivity, find_graph_bridges
 
 
@@ -29,16 +29,16 @@ from .graph import graph_connectivity, find_graph_bridges
 # ---------------------------------------------------------------------------
 
 MODEL_TIERS = {
-    "contig": "claude-haiku-4-5-20251001",       # the many: fast, cheap, for 28K contigs
-    "elder": "claude-sonnet-4-5-20250929",        # the wise: balanced, for community-level reasoning
-    "contigsattva": "claude-opus-4-6",            # the enlightened: deep, for mentoring + mediation
-    "mediator": "claude-opus-4-6",                # the mediator speaks with opus wisdom
+    "contig": "claude-haiku-4-5-20251001",       # fast, cheap — for 28K contigs
+    "community": "claude-sonnet-4-5-20250929",   # balanced — for community-level reasoning
+    "excellent": "claude-opus-4-6",              # deep — for high-quality bins + mediation
+    "mediator": "claude-opus-4-6",               # conflict resolution
 }
 
 
 def model_for_role(role: str) -> str:
     """Get the appropriate Claude model for a given role."""
-    return MODEL_TIERS.get(role, MODEL_TIERS["elder"])
+    return MODEL_TIERS.get(role, MODEL_TIERS["community"])
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ class ContigToolkit:
             return None
         return self._to_display.get(name, name)
 
-    def who_am_i(self, contig_name: str) -> dict:
+    def get_contig_info(self, contig_name: str) -> dict:
         """Full identity card for a contig."""
         c = self.identities.get(contig_name)
         if not c:
@@ -101,12 +101,12 @@ class ContigToolkit:
             },
             "graph_neighbors": c.connections,
             "n_graph_neighbors": len(c.connections),
-            "testimony": c.testimony,
-            "voice_strength": c.voice_strength,
+            "binner_assignments": c.binner_assignments,
+            "n_binners": c.n_binners,
             "community": self._display(c.community),
             "membership_type": c.membership_type,
             "ancestry": c.ancestry,
-            "gifts": c.gifts,
+            "gene_names": c.gene_names,
             "marker_genes": c.marker_genes,
         }
         # Landscape position (UMAP coordinates + cluster centroid)
@@ -150,7 +150,7 @@ class ContigToolkit:
         d["n_cds"] = len(self.annotations.get(c.name, []))
         return d
 
-    def who_are_my_neighbors(self, contig_name: str) -> dict:
+    def get_graph_neighbors(self, contig_name: str) -> dict:
         """Assembly graph neighbors with their community status."""
         c = self.identities.get(contig_name)
         if not c:
@@ -167,20 +167,20 @@ class ContigToolkit:
                 })
         return {"contig": contig_name, "neighbors": neighbors}
 
-    def what_did_the_oracles_say(self, contig_name: str) -> dict:
+    def get_binner_assignments(self, contig_name: str) -> dict:
         """All 5 binner assignments for a contig."""
         c = self.identities.get(contig_name)
         if not c:
             return {"error": f"Unknown contig: {contig_name}"}
         return {
             "contig": contig_name,
-            "testimony": c.testimony,
-            "voice_strength": c.voice_strength,
+            "binner_assignments": c.binner_assignments,
+            "n_binners": c.n_binners,
             "consensus": self._display(c.community),
         }
 
-    def how_do_i_resonate_with(self, contig_name: str, community_name: str) -> dict:
-        """Compute valence of a contig against a specific community.
+    def compare_to_bin(self, contig_name: str, community_name: str) -> dict:
+        """Compute fit score of a contig against a specific bin.
 
         Returns both computed metrics AND raw data for the LLM to assess.
         """
@@ -192,30 +192,30 @@ class ContigToolkit:
         if not comm:
             return {"error": f"Unknown community: {community_name}"}
 
-        v = contig_valence(c, comm, self.adjacency)
+        v = contig_fit_score(c, comm, self.adjacency)
 
         # Individual signal components
-        harmony = 0.0
+        tnf_cos = 0.0
         if comm.tnf_centroid is not None and c.tnf is not None:
-            harmony = 1.0 - cosine_distance(c.tnf, comm.tnf_centroid)
+            tnf_cos = 1.0 - cosine_distance(c.tnf, comm.tnf_centroid)
 
-        rhythm = 0.0
+        cov_r = 0.0
         if comm.mean_coverage is not None and c.coverage is not None:
             if len(c.coverage) > 1 and np.std(c.coverage) > 0 and np.std(comm.mean_coverage) > 0:
                 r, _ = pearsonr(c.coverage, comm.mean_coverage)
-                rhythm = max(0.0, r)
+                cov_r = max(0.0, r)
 
         member_set = set(comm.members)
         neighbors_in = [n for n in c.connections if n in member_set]
-        kinship = len(neighbors_in) / len(c.connections) if c.connections else 0.0
+        neighbor_frac = len(neighbors_in) / len(c.connections) if c.connections else 0.0
 
         return {
             "contig": contig_name,
             "community": self._display(community_name),
-            "valence": round(v, 4),
-            "harmony_tnf_cosine": round(harmony, 4),
-            "rhythm_coverage_correlation": round(rhythm, 4),
-            "kinship_fraction": round(kinship, 4),
+            "fit_score": round(v, 4),
+            "tnf_cosine_similarity": round(tnf_cos, 4),
+            "cov_pearson_r": round(cov_r, 4),
+            "graph_neighbor_fraction": round(neighbor_frac, 4),
             "graph_neighbors_in_community": neighbors_in,
             "n_graph_neighbors_in": len(neighbors_in),
             "contig_coverage": [round(float(x), 6) for x in c.coverage],
@@ -229,10 +229,10 @@ class ContigToolkit:
             "community_mean_gc": round(comm.mean_gc, 4),
             "gc_delta": round(abs(c.gc - comm.mean_gc), 4),
             "community_completeness": round(comm.completeness, 2),
-            "community_elder_rank": comm.elder_rank,
+            "community_quality_tier": comm.quality_tier,
         }
 
-    def what_is_this_community(self, community_name: str) -> dict:
+    def get_bin_info(self, community_name: str) -> dict:
         """Full community profile."""
         community_name = self._resolve(community_name)
         comm = self.communities.get(community_name)
@@ -248,7 +248,7 @@ class ContigToolkit:
             "gc_stdev": round(comm.gc_stdev, 4),
             "completeness": round(comm.completeness, 2),
             "redundancy": round(comm.redundancy, 2),
-            "elder_rank": comm.elder_rank,
+            "quality_tier": comm.quality_tier,
             "tnf_coherence": round(comm.tnf_coherence, 4),
             "coverage_correlation": round(comm.coverage_correlation, 4),
             "graph_connectivity": round(comm.graph_connectivity, 4),
@@ -259,8 +259,8 @@ class ContigToolkit:
             d["mean_coverage_per_sample"] = [round(float(x), 6) for x in comm.mean_coverage]
         return d
 
-    def what_gifts_are_missing(self, community_name: str) -> dict:
-        """Marker genes the community still needs."""
+    def get_missing_markers(self, community_name: str) -> dict:
+        """Marker genes the bin still needs."""
         community_name = self._resolve(community_name)
         comm = self.communities.get(community_name)
         if not comm:
@@ -272,8 +272,8 @@ class ContigToolkit:
             "n_missing": len(comm.missing_markers),
         }
 
-    def what_would_change_if_i_joined(self, contig_name: str, community_name: str) -> dict:
-        """Predict impact of a contig joining a community."""
+    def predict_join_impact(self, contig_name: str, community_name: str) -> dict:
+        """Predict impact of adding a contig to a bin."""
         community_name = self._resolve(community_name)
         c = self.identities.get(contig_name)
         comm = self.communities.get(community_name)
@@ -293,7 +293,7 @@ class ContigToolkit:
         if c.marker_genes and comm.missing_markers:
             contributed_markers = list(set(c.marker_genes) & set(comm.missing_markers))
 
-        # Would any existing member's valence drop?
+        # Would any existing member's fit score drop?
         # (approximate: check if new centroid shifts significantly)
         gc_shift = abs(new_mean_gc - old_mean_gc)
 
@@ -307,7 +307,7 @@ class ContigToolkit:
             "n_contributed": len(contributed_markers),
         }
 
-    def who_resonates_with_me(self, contig_name: str, k: int = 10) -> dict:
+    def find_similar_contigs(self, contig_name: str, k: int = 10) -> dict:
         """K nearest contigs by TNF composition."""
         if self.resonance_map is None:
             return {"error": "Resonance map not available"}
@@ -364,14 +364,14 @@ class ContigToolkit:
     def dispatch(self, tool_name: str, arguments: dict) -> dict:
         """Dispatch a tool call from the LLM."""
         dispatch_map = {
-            "who_am_i": self.who_am_i,
-            "who_are_my_neighbors": self.who_are_my_neighbors,
-            "what_did_the_oracles_say": self.what_did_the_oracles_say,
-            "how_do_i_resonate_with": self.how_do_i_resonate_with,
-            "what_is_this_community": self.what_is_this_community,
-            "what_gifts_are_missing": self.what_gifts_are_missing,
-            "what_would_change_if_i_joined": self.what_would_change_if_i_joined,
-            "who_resonates_with_me": self.who_resonates_with_me,
+            "get_contig_info": self.get_contig_info,
+            "get_graph_neighbors": self.get_graph_neighbors,
+            "get_binner_assignments": self.get_binner_assignments,
+            "compare_to_bin": self.compare_to_bin,
+            "get_bin_info": self.get_bin_info,
+            "get_missing_markers": self.get_missing_markers,
+            "predict_join_impact": self.predict_join_impact,
+            "find_similar_contigs": self.find_similar_contigs,
             "find_graph_connections": self.find_graph_connections,
             "read_annotations": self.read_annotations,
         }
@@ -389,8 +389,8 @@ class ContigToolkit:
 
 CONTIG_TOOLS_ANTHROPIC = [
     {
-        "name": "who_am_i",
-        "description": "Returns the full identity card for a contig — composition, energy, ancestry, gifts, connections, and oracle testimony.",
+        "name": "get_contig_info",
+        "description": "Returns contig metadata: size, GC%, coverage, taxonomy, domain, gene names, marker genes, MGE status, binner assignments.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -400,7 +400,7 @@ CONTIG_TOOLS_ANTHROPIC = [
         },
     },
     {
-        "name": "who_are_my_neighbors",
+        "name": "get_graph_neighbors",
         "description": "Returns assembly graph neighbors of a contig with their community status.",
         "input_schema": {
             "type": "object",
@@ -411,8 +411,8 @@ CONTIG_TOOLS_ANTHROPIC = [
         },
     },
     {
-        "name": "what_did_the_oracles_say",
-        "description": "Returns all binner (oracle) assignments for a contig — what each binning algorithm said, voice strength, and consensus placement.",
+        "name": "get_binner_assignments",
+        "description": "Returns per-binner bin assignments for a contig, agreement count, and consensus placement.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -422,8 +422,8 @@ CONTIG_TOOLS_ANTHROPIC = [
         },
     },
     {
-        "name": "how_do_i_resonate_with",
-        "description": "Computes how well a contig resonates with a specific community. Returns valence, harmony (TNF cosine), rhythm (coverage correlation), kinship (graph), raw coverage profiles, and GC comparison.",
+        "name": "compare_to_bin",
+        "description": "Computes fit score between a contig and a bin. Returns TNF cosine similarity, coverage Pearson r, graph neighbor fraction, and GC comparison.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -434,8 +434,8 @@ CONTIG_TOOLS_ANTHROPIC = [
         },
     },
     {
-        "name": "what_is_this_community",
-        "description": "Returns the full profile of a community — members, size, completeness, coverage profile, harmony metrics, and elder rank.",
+        "name": "get_bin_info",
+        "description": "Returns bin profile: members, size, completeness, coverage, coherence metrics, quality tier.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -445,8 +445,8 @@ CONTIG_TOOLS_ANTHROPIC = [
         },
     },
     {
-        "name": "what_gifts_are_missing",
-        "description": "Lists marker genes that a community still needs for completeness.",
+        "name": "get_missing_markers",
+        "description": "Lists marker genes a bin still needs for completeness.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -456,8 +456,8 @@ CONTIG_TOOLS_ANTHROPIC = [
         },
     },
     {
-        "name": "what_would_change_if_i_joined",
-        "description": "Predicts the impact of a contig joining a community — size change, GC shift, marker gene contribution.",
+        "name": "predict_join_impact",
+        "description": "Predicts the impact of adding a contig to a bin: size change, GC shift, new marker gene contributions.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -513,11 +513,11 @@ CONTIG_TOOLS = CONTIG_TOOLS_ANTHROPIC
 # Prompt templates
 # ---------------------------------------------------------------------------
 
-ROUND1_SYSTEM = """You are the voice of metagenome-assembled genome communities.
+ROUND1_SYSTEM = """You evaluate metagenome-assembled genome communities.
 
 Each community is a group of contigs that were placed together by consensus binning.
-You examine each community's collective state — its harmony, wholeness, and the
-wellbeing of its members — and identify issues that need attention.
+You examine each community's collective state — its coherence, completeness, and the
+composition of its members — and identify issues that need attention.
 
 You have tools to investigate individual contigs and communities. Use them to
 build evidence before making recommendations.
@@ -529,16 +529,16 @@ def round1_prompt(community: dict, uneasy: list[dict]) -> str:
     """Prompt for Round 1: Community Health Check."""
     uneasy_table = ""
     if uneasy:
-        uneasy_table = "\nUneasy members (negative valence):\n"
+        uneasy_table = "\nLow-fit members (negative fit score):\n"
         for u in uneasy:
             uneasy_table += (
-                f"  {u['contig']}: valence={u['valence']:+.3f}, "
+                f"  {u['contig']}: fit_score={u['valence']:+.3f}, "
                 f"size={u['size']:,}bp, GC={u['gc']:.3f} "
                 f"(community mean {u['community_mean_gc']:.3f}), "
-                f"voice={u['voice_strength']}/5\n"
+                f"binners={u['n_binners']}/5\n"
             )
 
-    return f"""Examine community {community['name']} [{community['elder_rank']}].
+    return f"""Examine community {community['name']} [{community['quality_tier']}].
 
 Community state:
   Members: {community.get('n_members', len(community.get('members', [])))}
@@ -548,12 +548,12 @@ Community state:
   TNF coherence: {community['tnf_coherence']:.4f}
   Coverage correlation: {community['coverage_correlation']:.4f}
   Graph connectivity: {community['graph_connectivity']:.4f}
-  Mean valence: {community['mean_valence']:+.3f}
-  Min valence: {community['min_valence']:+.3f}
+  Mean fit: {community['mean_fit']:+.3f}
+  Min fit: {community['min_fit']:+.3f}
   Uneasy members: {community['n_uneasy']}
 {uneasy_table}
 Use your tools to investigate any uneasy members and understand why they're
-uncomfortable. Check their identity, graph connections, and oracle testimony.
+uncomfortable. Check their identity, graph connections, and binner assignments.
 
 Then respond with this JSON structure:
 {{
@@ -575,18 +575,18 @@ Then respond with this JSON structure:
 }}"""
 
 
-ROUND2_SYSTEM = """You speak for unhoused contigs seeking community.
+ROUND2_SYSTEM = """You evaluate unhoused contigs seeking community placement.
 
-Each contig has been recognized by at least some oracles (binning algorithms)
+Each contig has been recognized by at least some binning algorithms
 but was not placed in the consensus. You investigate each contig's identity,
-connections, and resonance with nearby communities to recommend placement.
+connections, and fit with nearby communities to recommend placement.
 
 You have tools to examine contigs, communities, and their relationships.
 Use them to build evidence. Do not guess — investigate.
 
-Prioritize contigs whose gifts (marker genes) would increase a community's
-wholeness. But never force a contig into a community where its composition
-clashes — that would harm the community's harmony.
+Prioritize contigs whose marker genes would increase a community's
+completeness. But never force a contig into a community where its composition
+clashes — that would harm the community's coherence.
 
 Respond with JSON only."""
 
@@ -596,36 +596,36 @@ def round2_prompt(contigs: list[dict], resonance: dict[str, list[dict]]) -> str:
     contig_summaries = []
     for c in contigs:
         res = resonance.get(c["name"], [])
-        top_resonance = ""
+        top_fits = ""
         if res:
             top3 = res[:3]
-            top_resonance = "; ".join(
+            top_fits = "; ".join(
                 f"{r.get('community', r.get('contig', '?'))} (score={r['score']:.3f})"
                 for r in top3
             )
 
         contig_summaries.append(
             f"  {c['name']}: {c['size']:,}bp, GC={c['gc']:.3f}, "
-            f"voice={c['voice_strength']}/5, "
+            f"binners={c['n_binners']}/5, "
             f"connections={len(c.get('connections', []))}, "
-            f"resonance=[{top_resonance}]"
+            f"fit_scores=[{top_fits}]"
         )
 
     contig_list = "\n".join(contig_summaries)
 
-    return f"""You speak for {len(contigs)} unhoused contigs seeking community.
+    return f"""You evaluate {len(contigs)} unhoused contigs seeking community placement.
 
-Each has been heard by the oracles and measured against nearby communities.
-Use your tools to investigate their identity, connections, and resonance
+Each has been assessed by the binning algorithms and measured against nearby communities.
+Use your tools to investigate their identity, connections, and fit scores
 before making recommendations.
 
 Contigs:
 {contig_list}
 
 For each contig, investigate using tools and then recommend:
-- "join" — if there's clear resonance with a community
+- "join" — if there's a clear fit with a community
 - "wait" — if signals conflict (needs further investigation)
-- "wander" — if no community resonates (may seed a new one)
+- "wander" — if no community fits (may seed a new one)
 
 Respond with this JSON structure:
 {{
@@ -635,21 +635,21 @@ Respond with this JSON structure:
       "action": "join|wait|wander",
       "community": "community_name or null",
       "evidence": "brief summary of investigation",
-      "valence": 0.0
+      "fit_score": 0.0
     }}
   ]
 }}"""
 
 
-ROUND3_SYSTEM = """You evaluate candidate new communities formed from voiceless contigs.
+ROUND3_SYSTEM = """You evaluate candidate new communities formed from unbinned contigs.
 
 These are contigs that no binner recognized and no graph connects to existing
 communities. They have been clustered by composition and abundance. You
 evaluate whether each cluster represents a real organism or noise.
 
 Signs of a real community:
-- High composition harmony (>0.9 cosine coherence)
-- Synchronized energy across samples
+- High composition similarity (>0.9 TNF cosine coherence)
+- Correlated coverage across samples
 - Consistent ancestry
 - Presence of essential life-function genes
 - Reasonable genome size for the taxonomic group
@@ -658,7 +658,7 @@ Respond with JSON only."""
 
 
 def round3_prompt(clusters: list[dict]) -> str:
-    """Prompt for Round 3: Voiceless clusters."""
+    """Prompt for Round 3: Unbinned clusters."""
     cluster_summaries = []
     for cl in clusters:
         cluster_summaries.append(
@@ -671,8 +671,8 @@ def round3_prompt(clusters: list[dict]) -> str:
 
     cluster_list = "\n".join(cluster_summaries)
 
-    return f"""{len(clusters)} clusters have emerged from the voiceless contigs —
-fragments that no oracle recognized and no graph connects to existing communities.
+    return f"""{len(clusters)} clusters have emerged from the unbinned contigs —
+fragments that no binner recognized and no graph connects to existing communities.
 
 Candidate communities:
 {cluster_list}

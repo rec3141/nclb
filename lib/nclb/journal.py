@@ -32,7 +32,7 @@ class Chronicle:
         self.unhoused_stories: list[dict] = []
         self.new_community_stories: list[dict] = []
         self.elder_reports: list[dict] = []
-        self.traveler_stories: list[dict] = []
+        self.movable_stories: list[dict] = []
         self.summary: dict = {}
 
     def to_json(self) -> dict:
@@ -44,7 +44,7 @@ class Chronicle:
             "unhoused_stories": self.unhoused_stories,
             "new_community_stories": self.new_community_stories,
             "elder_reports": self.elder_reports,
-            "traveler_stories": self.traveler_stories,
+            "movable_stories": self.movable_stories,
             "summary": self.summary,
         }
 
@@ -68,10 +68,10 @@ class Chronicle:
                       f"({stats.get('housed_after_pct', 0):.1f}%)")
         lines.append("")
 
-        if stats.get("elder_hierarchy"):
-            lines.append("### Elder Hierarchy")
+        if stats.get("quality_tiers"):
+            lines.append("### Quality Tiers")
             lines.append("")
-            for rank, count in stats["elder_hierarchy"].items():
+            for rank, count in stats["quality_tiers"].items():
                 lines.append(f"- **{rank}**: {count}")
             lines.append("")
 
@@ -85,7 +85,7 @@ class Chronicle:
                 lines.append(story.to_markdown())
                 lines.append("")
 
-        # Unhoused contig stories
+        # Unbinned contig stories
         if self.unhoused_stories:
             lines.append("---")
             lines.append("")
@@ -95,13 +95,13 @@ class Chronicle:
                 lines.append(f"### {story['contig']}")
                 lines.append("")
                 lines.append(f"*{story['size']:,} bp, GC={story['gc']:.3f}, "
-                              f"voice={story['voice_strength']}/5*")
+                              f"n_binners={story['n_binners']}/5*")
                 lines.append("")
                 if story.get("evidence"):
                     lines.append(f"> {story['evidence']}")
                     lines.append("")
                 lines.append(f"Joined **{story['community']}** "
-                              f"(valence {story.get('valence', 0):+.3f})")
+                              f"(fit_score {story.get('fit_score', 0):+.3f})")
                 lines.append("")
 
         # New communities
@@ -136,13 +136,13 @@ class Chronicle:
                     lines.append(f"**Verdict**: {report['verdict']}")
                     lines.append("")
 
-        # Traveler stories
-        if self.traveler_stories:
+        # Mobile element stories
+        if self.movable_stories:
             lines.append("---")
             lines.append("")
-            lines.append("## Travelers")
+            lines.append("## Movable Elements")
             lines.append("")
-            for story in self.traveler_stories:
+            for story in self.movable_stories:
                 lines.append(f"### {story['contig']}")
                 lines.append("")
                 lines.append(f"*Type: {story['element_type']}, "
@@ -165,7 +165,7 @@ class Chronicle:
         lines.append(f"- Contigs released: {summary.get('n_released', 0)}")
         lines.append(f"- Contigs placed: {summary.get('n_placed', 0)}")
         lines.append(f"- New communities: {summary.get('n_new_communities', 0)}")
-        lines.append(f"- Travelers identified: {summary.get('n_travelers', 0)}")
+        lines.append(f"- Mobile elements identified: {summary.get('n_travelers', 0)}")
         lines.append(f"- Elder investigations: {summary.get('n_elder_investigations', 0)}")
         lines.append("")
 
@@ -177,7 +177,7 @@ class CommunityStory:
 
     def __init__(self, community: CommunityProfile):
         self.name = community.name
-        self.elder_rank = community.elder_rank
+        self.quality_tier = community.quality_tier
         self.completeness_before = community.completeness
         self.completeness_after = community.completeness
         self.redundancy_before = community.redundancy
@@ -192,7 +192,7 @@ class CommunityStory:
     def to_json(self) -> dict:
         return {
             "name": self.name,
-            "elder_rank": self.elder_rank,
+            "quality_tier": self.quality_tier,
             "completeness_before": self.completeness_before,
             "completeness_after": self.completeness_after,
             "redundancy_before": self.redundancy_before,
@@ -207,7 +207,7 @@ class CommunityStory:
 
     def to_markdown(self) -> str:
         lines = []
-        lines.append(f"### {self.name} [{self.elder_rank}]")
+        lines.append(f"### {self.name} [{self.quality_tier}]")
         lines.append("")
         lines.append(f"**Wholeness**: {self.completeness_before:.1f}% → "
                       f"{self.completeness_after:.1f}%")
@@ -281,10 +281,10 @@ def build_chronicle(
                 "contig": joined["contig"],
                 "community": joined["to"],
                 "evidence": joined.get("evidence", ""),
-                "valence": joined.get("valence", 0.0),
+                "fit_score": joined.get("fit_score", 0.0),
                 "size": contig.size,
                 "gc": contig.gc,
-                "voice_strength": contig.voice_strength,
+                "n_binners": contig.n_binners,
             })
 
     # New community stories
@@ -328,7 +328,7 @@ def write_contig_membership(
 
     Produces two files:
     - contig2community.tsv: Traditional one-contig-one-bin (for tools that need it)
-    - contig_membership.tsv: Full many-to-many with type + valence
+    - contig_membership.tsv: Full many-to-many with type + fit_score
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -340,23 +340,23 @@ def write_contig_membership(
 
     # Full membership table
     with open(output_dir / "contig_membership.tsv", "w") as f:
-        f.write("contig\tcommunity\tmembership_type\tvalence\tsize\tgc\tvoice_strength\n")
+        f.write("contig\tcommunity\tmembership_type\tfit_score\tsize\tgc\tn_binners\n")
         for name, c in sorted(identities.items()):
-            comm = c.community or "unhoused"
-            f.write(f"{name}\t{comm}\t{c.membership_type}\t{c.valence:.4f}\t"
-                    f"{c.size}\t{c.gc:.4f}\t{c.voice_strength}\n")
+            comm = c.community or "unbinned"
+            f.write(f"{name}\t{comm}\t{c.membership_type}\t{c.fit_score:.4f}\t"
+                    f"{c.size}\t{c.gc:.4f}\t{c.n_binners}\n")
 
 
-def write_valence_report(
+def write_fit_report(
     identities: dict[str, ContigIdentity],
     output_dir: Path,
 ):
-    """Write per-contig valence scores."""
+    """Write per-contig fit scores."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(output_dir / "valence_report.tsv", "w") as f:
-        f.write("contig\tcommunity\tvalence\tsize\tgc\tvoice_strength\tmembership_type\n")
-        for name, c in sorted(identities.items(), key=lambda x: x[1].valence):
-            comm = c.community or "unhoused"
-            f.write(f"{name}\t{comm}\t{c.valence:.4f}\t{c.size}\t"
-                    f"{c.gc:.4f}\t{c.voice_strength}\t{c.membership_type}\n")
+    with open(output_dir / "fit_score_report.tsv", "w") as f:
+        f.write("contig\tcommunity\tfit_score\tsize\tgc\tn_binners\tmembership_type\n")
+        for name, c in sorted(identities.items(), key=lambda x: x[1].fit_score):
+            comm = c.community or "unbinned"
+            f.write(f"{name}\t{comm}\t{c.fit_score:.4f}\t{c.size}\t"
+                    f"{c.gc:.4f}\t{c.n_binners}\t{c.membership_type}\n")

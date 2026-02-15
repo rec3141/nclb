@@ -37,7 +37,7 @@ from nclb.elders import (
     ElderConfig, ElderToolkit, ElderInvestigation,
     identify_redundant_markers,
 )
-from nclb.valence import contig_valence
+from nclb.valence import contig_fit_score
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ def render_verdict(report: dict) -> dict:
             "classification": "mge",
             "confidence": 0.9,
             "reasoning": "; ".join(reasons) + ". Redundancy is from a mobile genetic element, not contamination.",
-            "reclassify_as": "traveler",
+            "reclassify_as": "movable",
             "mge_contigs": mge_names,
         }
 
@@ -286,9 +286,9 @@ def main():
         help="Output path (default: <results>/binning/nclb/elder_reports.json)"
     )
     parser.add_argument(
-        "--min-rank", type=str, default="full",
-        choices=["apprentice", "full", "sage", "contigsattva"],
-        help="Minimum elder rank to investigate (default: full)"
+        "--min-rank", type=str, default="good",
+        choices=["fair", "good", "high", "excellent"],
+        help="Minimum quality tier to investigate (default: good)"
     )
     parser.add_argument(
         "--with-ani", action="store_true",
@@ -310,7 +310,7 @@ def main():
     t0 = time.time()
 
     # Rank hierarchy for filtering
-    rank_order = {"none": 0, "apprentice": 1, "full": 2, "sage": 3, "contigsattva": 4}
+    rank_order = {"low": 0, "fair": 1, "good": 2, "high": 3, "excellent": 4}
     min_rank_val = rank_order.get(args.min_rank, 2)
 
     # --- Load identity data ---
@@ -400,7 +400,7 @@ def main():
 
     eligible = {
         name: comm for name, comm in communities.items()
-        if rank_order.get(comm.elder_rank, 0) >= min_rank_val
+        if rank_order.get(comm.quality_tier, 0) >= min_rank_val
         and comm.redundancy > 0
     }
     log(f"  Communities with rank >= {args.min_rank} and redundancy > 0: {len(eligible)}")
@@ -417,14 +417,14 @@ def main():
         redundant_markers = identify_redundant_markers(comm, identities)
 
         if not redundant_markers:
-            log(f"  {comm_name} [{comm.elder_rank}]: redundancy={comm.redundancy:.1f}% but no redundant markers found in identity data")
+            log(f"  {comm_name} [{comm.quality_tier}]: redundancy={comm.redundancy:.1f}% but no redundant markers found in identity data")
             continue
 
-        log(f"  {comm_name} [{comm.elder_rank}]: {len(redundant_markers)} redundant marker(s)")
+        log(f"  {comm_name} [{comm.quality_tier}]: {len(redundant_markers)} redundant marker(s)")
 
         community_report = {
             "community": comm_name,
-            "elder_rank": comm.elder_rank,
+            "quality_tier": comm.quality_tier,
             "completeness": round(comm.completeness, 1),
             "redundancy": round(comm.redundancy, 1),
             "n_members": len(comm.members),

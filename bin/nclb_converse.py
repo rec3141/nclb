@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Gathering 2: The Conversations (tool-use architecture).
 
-Each contig is an agent that discovers itself through tool calls.
-The LLM investigates by calling tools like who_am_i(), how_do_i_resonate_with(),
-what_is_this_community() — each returns actual data, not pre-digested metrics.
+Each contig is investigated through tool calls.
+The LLM investigates by calling tools like get_contig_info(), compare_to_bin(),
+get_bin_info() — each returns actual data, not pre-digested metrics.
 
 Supports OpenAI-compatible servers (LM Studio, ollama, vLLM) and Anthropic API.
 
@@ -31,33 +31,33 @@ from nclb.identity import (
 from nclb.voices import (
     ContigToolkit, CONTIG_TOOLS_OPENAI, parse_json_response,
 )
-from nclb.valence import contig_valence, tnf_coherence, coverage_coherence
+from nclb.valence import contig_fit_score, tnf_coherence, coverage_coherence
 
 
 # ---------------------------------------------------------------------------
 # System prompts (brief — the LLM discovers context through tools)
 # ---------------------------------------------------------------------------
 
-ROUND1_SYSTEM = """You are the voice of metagenome-assembled genome communities.
+ROUND1_SYSTEM = """You examine metagenome-assembled genome bins for quality issues.
 
-You have tools to investigate any contig or community. Use them to understand
-why members are uneasy before deciding what action to take.
+Each bin contains contigs placed together by consensus binning.
+You examine each bin's coherence and identify contigs that don't belong.
 
 Available tools:
-- who_am_i(contig): size, GC%, coverage, taxonomy, domain (prokaryotic/eukaryotic/organellar), gifts (gene names), marker_genes (SCGs), n_cds, MGE status (viral/plasmid/provirus), defense systems, integrons, secretion systems, genomic islands, voice strength
-- who_are_my_neighbors(contig): assembly graph neighbors with their community assignments
-- what_did_the_oracles_say(contig): per-binner assignments, voice strength, consensus placement
-- how_do_i_resonate_with(contig, community): valence score, harmony (TNF cosine), rhythm (coverage correlation), kinship (graph connectivity), GC comparison
-- what_is_this_community(community): members, total size, GC range, completeness, contamination, coverage profile, harmony metrics, elder rank, marker gene inventory
-- what_gifts_are_missing(community): marker genes the community still needs for completeness
-- what_would_change_if_i_joined(contig, community): predicted size/GC shift, new marker gene contributions
-- find_graph_connections(contig): which communities this contig connects to via assembly graph
-- read_annotations(contig, page=1): paginated CDS annotation table — gene name, product, start/stop, strand, KEGG/EC/Pfam cross-references (20 features per page)
+- get_contig_info(contig): size, GC%, coverage, taxonomy, domain (prokaryotic/eukaryotic/organellar), gene names, marker_genes (SCGs), n_cds, MGE status (viral/plasmid/provirus), defense systems, integrons, secretion systems, genomic islands, binner agreement (n_binners)
+- get_graph_neighbors(contig): assembly graph neighbors with their bin assignments
+- get_binner_assignments(contig): per-binner assignments, agreement count, consensus placement
+- compare_to_bin(contig, community): fit score, TNF cosine similarity, coverage Pearson r, graph neighbor fraction, GC comparison
+- get_bin_info(community): members, total size, GC range, completeness, contamination, coverage profile, coherence metrics, quality tier, marker gene inventory
+- get_missing_markers(community): marker genes the bin still needs for completeness
+- predict_join_impact(contig, community): predicted size/GC shift, new marker gene contributions
+- find_graph_connections(contig): which bins this contig connects to via assembly graph
+- read_annotations(contig, page=1): paginated CDS annotation table (20 features per page)
 
 Actions you can recommend:
-- RELEASE a contig: remove it from this community (it becomes unhoused). Only release
+- RELEASE a contig: remove it from this community (it becomes unbinned). Only release
   contigs that clearly do not belong — e.g. different taxonomy, wildly different GC/coverage,
-  no graph connections, low binner agreement. Strong binner agreement (voice >= 3) is evidence
+  no graph connections, low binner agreement. Strong binner agreement (n_binners >= 3) is evidence
   a contig BELONGS, not a reason to release it.
 - SPLIT the community: if you find the community contains two or more distinct groups
   (different phyla, divergent coverage patterns, bimodal GC), recommend splitting it.
@@ -68,35 +68,35 @@ Investigate thoroughly, weigh the evidence, and make your best judgment.
 After investigating, respond with JSON (no commentary):
 {"community": "name", "assessment": "narrative", "release": [{"contig": "name", "reason": "evidence"}], "split": [{"name": "descriptive label", "members": ["contig1", "contig2"]}], "concerns": []}"""
 
-ROUND2_SYSTEM = """You speak for unhoused contigs seeking community.
+ROUND2_SYSTEM = """You evaluate unbinned contigs seeking bin placement.
 
 You have tools to investigate each contig's identity, graph connections,
-and resonance with candidate communities. Call them to build evidence.
+and compatibility with candidate bins. Call them to build evidence.
 
 Available tools:
-- who_am_i(contig): size, GC%, coverage, taxonomy, domain (prokaryotic/eukaryotic/organellar), gifts (gene names), marker_genes (SCGs), n_cds, MGE status (viral/plasmid/provirus), defense systems, integrons, secretion systems, genomic islands, voice strength
-- who_are_my_neighbors(contig): assembly graph neighbors with their community assignments
-- what_did_the_oracles_say(contig): per-binner assignments, voice strength, consensus placement
-- how_do_i_resonate_with(contig, community): valence score, harmony (TNF cosine), rhythm (coverage correlation), kinship (graph connectivity), GC comparison
-- what_is_this_community(community): members, total size, GC range, completeness, contamination, coverage profile, harmony metrics, elder rank, marker gene inventory
-- what_gifts_are_missing(community): marker genes the community still needs for completeness
-- what_would_change_if_i_joined(contig, community): predicted size/GC shift, new marker gene contributions
-- find_graph_connections(contig): which communities this contig connects to via assembly graph
-- read_annotations(contig, page=1): paginated CDS annotation table — gene name, product, start/stop, strand, KEGG/EC/Pfam cross-references (20 features per page)
+- get_contig_info(contig): size, GC%, coverage, taxonomy, domain (prokaryotic/eukaryotic/organellar), gene names, marker_genes (SCGs), n_cds, MGE status (viral/plasmid/provirus), defense systems, integrons, secretion systems, genomic islands, binner agreement (n_binners)
+- get_graph_neighbors(contig): assembly graph neighbors with their bin assignments
+- get_binner_assignments(contig): per-binner assignments, agreement count, consensus placement
+- compare_to_bin(contig, community): fit score, TNF cosine similarity, coverage Pearson r, graph neighbor fraction, GC comparison
+- get_bin_info(community): members, total size, GC range, completeness, contamination, coverage profile, coherence metrics, quality tier, marker gene inventory
+- get_missing_markers(community): marker genes the bin still needs for completeness
+- predict_join_impact(contig, community): predicted size/GC shift, new marker gene contributions
+- find_graph_connections(contig): which bins this contig connects to via assembly graph
+- read_annotations(contig, page=1): paginated CDS annotation table (20 features per page)
 
 These contigs were recognized by binning algorithms but not placed in the
 consensus. Investigate each and find where they belong.
 
 CRITICAL: Only use community names that appear in your prompt's candidate list or
-that are returned by find_graph_connections() / who_are_my_neighbors() tool calls.
-The testimony field in who_am_i() shows per-binner bin IDs (e.g. "semibin_074")
+that are returned by find_graph_connections() / get_graph_neighbors() tool calls.
+The binner_assignments field in get_contig_info() shows per-binner bin IDs (e.g. "semibin_074")
 which are NOT valid community names — never use binner IDs as community names.
 Never invent or guess community names. If no valid community is found, use "wait".
 
 After investigating, respond with JSON (no commentary):
-{"decisions": [{"contig": "name", "action": "join|wait|wander", "community": "name_or_null", "evidence": "specific signals", "valence": 0.0}]}"""
+{"decisions": [{"contig": "name", "action": "join|wait|wander", "community": "name_or_null", "evidence": "specific signals", "fit_score": 0.0}]}"""
 
-ROUND3_SYSTEM = """You evaluate candidate new communities formed from voiceless contigs.
+ROUND3_SYSTEM = """You evaluate candidate new communities formed from unbinned contigs.
 
 Signs of a real community: TNF coherence >0.9, synchronized coverage across
 samples, reasonable genome size, consistent ancestry.
@@ -114,7 +114,7 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
     if "error" in result:
         return f"ERROR: {result['error']}"
 
-    if tool_name == "who_am_i":
+    if tool_name == "get_contig_info":
         parts = [f"{result.get('size', 0):,}bp"]
         if result.get("ancestry"):
             # Show last two ranks of lineage
@@ -122,8 +122,8 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
             parts.append(lineage[-1].strip() if lineage else "?")
         if result.get("mge_type"):
             parts.append(result["mge_type"])
-        if result.get("gifts"):
-            parts.append(f"{len(result['gifts'])} gifts")
+        if result.get("gene_names"):
+            parts.append(f"{len(result['gene_names'])} genes")
         if result.get("marker_genes"):
             parts.append(f"{len(result['marker_genes'])} SCGs")
         if result.get("has_defense_system"):
@@ -139,36 +139,36 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         n_cds = result.get("n_cds", 0)
         if n_cds:
             parts.append(f"{n_cds} CDS")
-        parts.append(f"voice={result.get('voice_strength', 0)}")
+        parts.append(f"n_binners={result.get('n_binners', 0)}")
         return ", ".join(parts)
 
-    if tool_name == "what_did_the_oracles_say":
-        testimony = result.get("testimony", {})
-        assigned = [f"{k}={v}" for k, v in testimony.items() if v]
-        return f"voice={result.get('voice_strength', 0)}, {', '.join(assigned) or 'none'}"
+    if tool_name == "get_binner_assignments":
+        binner_assignments = result.get("binner_assignments", {})
+        assigned = [f"{k}={v}" for k, v in binner_assignments.items() if v]
+        return f"n_binners={result.get('n_binners', 0)}, {', '.join(assigned) or 'none'}"
 
-    if tool_name == "how_do_i_resonate_with":
+    if tool_name == "compare_to_bin":
         return (
-            f"valence={result.get('valence', 0):+.3f}, "
-            f"harmony={result.get('harmony_tnf_cosine', 0):.3f}, "
-            f"rhythm={result.get('rhythm_coverage_correlation', 0):.3f}, "
-            f"kinship={result.get('kinship_fraction', 0):.3f}, "
+            f"fit_score={result.get('fit_score', 0):+.3f}, "
+            f"tnf_cosine={result.get('tnf_cosine_similarity', 0):.3f}, "
+            f"cov_pearson_r={result.get('cov_pearson_r', 0):.3f}, "
+            f"graph_neighbor_frac={result.get('graph_neighbor_fraction', 0):.3f}, "
             f"GC_delta={result.get('gc_delta', 0):.4f}"
         )
 
-    if tool_name == "what_is_this_community":
+    if tool_name == "get_bin_info":
         return (
             f"{result.get('n_members', 0)} members, "
             f"{result.get('total_size', 0):,}bp, "
             f"{result.get('completeness', 0):.0f}% complete, "
-            f"{result.get('elder_rank', '?')}, "
+            f"{result.get('quality_tier', '?')}, "
             f"{len(result.get('missing_markers', []))} missing SCGs"
         )
 
-    if tool_name == "what_gifts_are_missing":
+    if tool_name == "get_missing_markers":
         return f"{result.get('n_missing', 0)} missing markers"
 
-    if tool_name == "what_would_change_if_i_joined":
+    if tool_name == "predict_join_impact":
         return (
             f"+{result.get('size_delta', 0):,}bp, "
             f"GC_shift={result.get('gc_shift', 0):.4f}, "
@@ -182,7 +182,7 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
             return f"{len(conns)} communities: {top}"
         return "no graph connections"
 
-    if tool_name == "who_are_my_neighbors":
+    if tool_name == "get_graph_neighbors":
         neighbors = result.get("neighbors", [])
         housed = sum(1 for n in neighbors if n.get("community"))
         return f"{len(neighbors)} neighbors ({housed} housed)"
@@ -421,25 +421,25 @@ def run_tool_conversation(
 def round1_prompt(comm_name: str, comm_data: dict, uneasy_names: list[str],
                   display_name: str | None = None) -> str:
     """Brief prompt for Round 1 — the LLM investigates via tools."""
-    uneasy_section = "None — all members have positive valence."
+    uneasy_section = "None — all members have positive fit score."
     if uneasy_names:
         uneasy_section = ", ".join(uneasy_names)
 
     shown_name = display_name or comm_name
-    elder = comm_data.get('elder_rank', 'none')
+    quality = comm_data.get('quality_tier', 'none')
     return f"""Examine community "{shown_name}".
 
 Quick overview:
-  Elder rank: {elder}
+  Quality tier: {quality}
   Members: {len(comm_data.get('members', []))}
   Size: {comm_data['total_size']:,} bp
   Wholeness: {comm_data['completeness']:.1f}% | Redundancy: {comm_data['redundancy']:.1f}%
-  Mean valence: {comm_data['mean_valence']:+.3f} | Min valence: {comm_data['min_valence']:+.3f}
+  Mean fit: {comm_data['mean_fit']:+.3f} | Min fit: {comm_data['min_fit']:+.3f}
 
-Uneasy members (negative valence): {uneasy_section}
+Low-fit members (negative fit score): {uneasy_section}
 
-Investigate each uneasy member using who_am_i() and how_do_i_resonate_with().
-Check their coverage, graph connections, and oracle testimony.
+Investigate each low-fit member using get_contig_info() and compare_to_bin().
+Check their coverage, graph connections, and binner assignments.
 Then decide which should be released."""
 
 
@@ -460,14 +460,14 @@ def round2_prompt(
             lines.append(f"  {name}: no pre-computed candidates (use find_graph_connections)")
 
     contig_section = "\n".join(lines)
-    return f"""You speak for {len(contig_names)} unhoused contigs seeking community.
+    return f"""You evaluate {len(contig_names)} unbinned contigs seeking bin placement.
 
 Contigs and their candidate communities:
 {contig_section}
 
 For each contig:
-1. Call who_am_i() to learn its full identity
-2. Call how_do_i_resonate_with(contig, community) for the candidate communities listed above
+1. Call get_contig_info() to learn its full identity
+2. Call compare_to_bin(contig, community) for the candidate communities listed above
 3. If no candidates are listed, call find_graph_connections() to discover communities
 4. Decide: join (specify the community name exactly as listed), wait, or wander
 
@@ -511,7 +511,7 @@ def cluster_voiceless(identities: dict) -> list[dict]:
 
     voiceless = []
     for c in identities.values():
-        if c.community is None and c.voice_strength == 0 and not c.connections:
+        if c.community is None and c.n_binners == 0 and not c.connections:
             if c.size >= 5000:
                 voiceless.append(c)
 
@@ -712,14 +712,14 @@ def main():
         log(f"[INFO] Seeded {len(new_comms)} binner-agreement communities ({len(binner_assigned):,} contigs)")
     log(f"[INFO] Total: {len(identities):,} contigs, {len(communities)} communities")
 
-    # Compute valence for housed contigs
-    from nclb.valence import contig_valence as cv
+    # Compute fit scores for housed contigs
+    from nclb.valence import contig_fit_score as cv
     for name, c in identities.items():
         if c.community and c.community in communities:
-            c.valence = cv(c, communities[c.community], adjacency)
+            c.fit_score = cv(c, communities[c.community], adjacency)
 
-    # Compute community harmony
-    from nclb.valence import community_harmony
+    # Compute community coherence metrics
+    from nclb.valence import community_metrics
     from nclb.graph import graph_connectivity
     for comm in communities.values():
         members = [identities[n] for n in comm.members if n in identities]
@@ -799,10 +799,10 @@ def main():
     comm_data_map = {}
     uneasy_map = {}
     for comm_name, comm in communities.items():
-        harmony = community_harmony(comm, identities, adjacency)
+        harmony_report = community_metrics(comm, identities, adjacency)
         comm_data_map[comm_name] = {
             "name": comm_name,
-            "elder_rank": comm.elder_rank,
+            "quality_tier": comm.quality_tier,
             "members": comm.members,
             "total_size": comm.total_size,
             "completeness": comm.completeness,
@@ -810,14 +810,14 @@ def main():
             "tnf_coherence": comm.tnf_coherence,
             "coverage_correlation": comm.coverage_correlation,
             "graph_connectivity": comm.graph_connectivity,
-            "mean_valence": harmony["mean_valence"],
-            "min_valence": harmony["min_valence"],
+            "mean_fit": harmony_report["mean_fit"],
+            "min_fit": harmony_report["min_fit"],
         }
         # Find uneasy members
         uneasy_names = []
         for m in comm.members:
             c = identities.get(m)
-            if c and c.valence < 0:
+            if c and c.fit_score < 0:
                 uneasy_names.append(m)
         uneasy_map[comm_name] = uneasy_names
 
@@ -879,14 +879,14 @@ def main():
                 contig_candidates.setdefault(cand["contig"], []).append(comm_name)
         log(f"  Pre-computed candidates for {len(contig_candidates)} contigs from gathering.json")
 
-    # Select unhoused contigs with voice (sorted by voice strength, then size)
+    # Select unhoused contigs with binner support (sorted by n_binners, then size)
     unhoused = [
         c for c in identities.values()
-        if c.community is None and c.voice_strength >= 2
+        if c.community is None and c.n_binners >= 2
     ]
-    unhoused.sort(key=lambda c: (-c.voice_strength, -c.size))
+    unhoused.sort(key=lambda c: (-c.n_binners, -c.size))
     unhoused = unhoused[:args.max_round2]
-    log(f"  Processing {len(unhoused)} unhoused contigs (voice >= 2)")
+    log(f"  Processing {len(unhoused)} unhoused contigs (n_binners >= 2)")
 
     # Batch contigs for conversation
     batches = []

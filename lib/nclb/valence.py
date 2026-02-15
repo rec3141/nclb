@@ -1,7 +1,7 @@
-"""Valence function and harmony metrics.
+"""Fit score function and community metrics.
 
-Valence measures how well a contig belongs in a community.
-Harmony measures the collective wellbeing of a community.
+Fit score measures how well a contig belongs in a bin.
+Community metrics measure the collective coherence of a bin.
 These aren't metaphors — they're concrete, differentiable metrics.
 """
 
@@ -17,60 +17,60 @@ from .identity import ContigIdentity, CommunityProfile
 
 
 # ---------------------------------------------------------------------------
-# Contig valence: how well does this contig belong here?
+# Contig fit score: how well does this contig belong here?
 # ---------------------------------------------------------------------------
 
-def contig_valence(
+def contig_fit_score(
     contig: ContigIdentity,
     community: CommunityProfile,
     adjacency: Optional[dict[str, list[str]]] = None,
     weights: Optional[dict[str, float]] = None,
 ) -> float:
-    """Compute how well a contig resonates with a community.
+    """Compute how well a contig fits in a community.
 
     Returns a continuous score in [-1, +1].
     """
     w = weights or {
-        "harmony": 0.30,    # composition is fundamental
-        "rhythm": 0.25,     # abundance pattern is strong signal
-        "kinship": 0.15,    # graph links are physical evidence
+        "tnf": 0.30,        # composition is fundamental
+        "coverage": 0.25,   # abundance pattern is strong signal
+        "graph": 0.15,      # graph links are physical evidence
         "recognition": 0.15,  # binner consensus carries weight
         "contribution": 0.15,  # filling gaps is valued
     }
 
-    # Harmony: cosine similarity of contig TNF to community centroid
-    harmony = 0.0
+    # TNF similarity: cosine similarity of contig TNF to community centroid
+    tnf_sim = 0.0
     if community.tnf_centroid is not None and contig.tnf is not None:
         cos_dist = cosine_distance(contig.tnf, community.tnf_centroid)
-        harmony = 1.0 - cos_dist  # cosine similarity
+        tnf_sim = 1.0 - cos_dist  # cosine similarity
 
-    # Rhythm: Pearson correlation of coverage profiles
-    rhythm = 0.0
+    # Coverage correlation: Pearson correlation of coverage profiles
+    cov_corr = 0.0
     if community.mean_coverage is not None and contig.coverage is not None:
         if len(contig.coverage) > 1 and np.std(contig.coverage) > 0 and np.std(community.mean_coverage) > 0:
             r, _ = pearsonr(contig.coverage, community.mean_coverage)
-            rhythm = max(0.0, r)  # clamp negative correlations to 0
+            cov_corr = max(0.0, r)  # clamp negative correlations to 0
         elif len(contig.coverage) == 1:
             # Single sample — use ratio similarity instead
             if community.mean_coverage[0] > 0:
                 ratio = contig.coverage[0] / community.mean_coverage[0]
-                rhythm = 1.0 - min(abs(np.log2(max(ratio, 0.01))), 3.0) / 3.0
-                rhythm = max(0.0, rhythm)
+                cov_corr = 1.0 - min(abs(np.log2(max(ratio, 0.01))), 3.0) / 3.0
+                cov_corr = max(0.0, cov_corr)
 
-    # Kinship: fraction of contig's graph neighbors in this community
-    kinship = 0.0
+    # Graph fraction: fraction of contig's graph neighbors in this community
+    graph_frac = 0.0
     if adjacency is not None and contig.connections:
         member_set = set(community.members)
         n_in_community = sum(1 for n in contig.connections if n in member_set)
-        kinship = n_in_community / len(contig.connections)
+        graph_frac = n_in_community / len(contig.connections)
 
-    # Recognition: fraction of oracles that agree with this community
+    # Recognition: fraction of binners that agree with this community
     recognition = 0.0
-    if contig.testimony:
+    if contig.binner_assignments:
         # For each binner, check if it placed this contig in the same bin
         # that was the source of this community
         n_agree = 0
-        for binner, assignment in contig.testimony.items():
+        for binner, assignment in contig.binner_assignments.items():
             if assignment is not None:
                 # Check if this binner's assignment matches the community's source
                 # community name format: dastool-{binner}_{number}
@@ -90,56 +90,56 @@ def contig_valence(
         contribution = len(overlap) / len(community.missing_markers)
 
     # Weighted combination
-    raw_valence = (
-        w["harmony"] * harmony
-        + w["rhythm"] * rhythm
-        + w["kinship"] * kinship
+    raw_score = (
+        w["tnf"] * tnf_sim
+        + w["coverage"] * cov_corr
+        + w["graph"] * graph_frac
         + w["recognition"] * recognition
         + w["contribution"] * contribution
     )
 
     # Rescale to [-1, +1]
-    return 2.0 * raw_valence - 1.0
+    return 2.0 * raw_score - 1.0
 
 
 # ---------------------------------------------------------------------------
-# Community harmony: collective wellbeing
+# Community metrics: collective coherence
 # ---------------------------------------------------------------------------
 
-def community_harmony(
+def community_metrics(
     community: CommunityProfile,
     identities: dict[str, ContigIdentity],
     adjacency: Optional[dict[str, list[str]]] = None,
 ) -> dict[str, float]:
-    """Compute collective harmony metrics for a community."""
+    """Compute collective fit metrics for a community."""
 
-    member_valences = []
+    member_scores = []
     for name in community.members:
         contig = identities.get(name)
         if contig:
-            v = contig_valence(contig, community, adjacency)
-            member_valences.append(v)
+            v = contig_fit_score(contig, community, adjacency)
+            member_scores.append(v)
 
-    if not member_valences:
+    if not member_scores:
         return {
-            "mean_valence": 0.0,
-            "min_valence": 0.0,
+            "mean_fit": 0.0,
+            "min_fit": 0.0,
             "wholeness": community.completeness,
             "purity": 100.0 - community.redundancy,
-            "collective_harmony": 0.0,
+            "collective_fit": 0.0,
             "n_uneasy": 0,
         }
 
-    mean_v = float(np.mean(member_valences))
-    min_v = float(np.min(member_valences))
+    mean_v = float(np.mean(member_scores))
+    min_v = float(np.min(member_scores))
 
     return {
-        "mean_valence": mean_v,
-        "min_valence": min_v,
+        "mean_fit": mean_v,
+        "min_fit": min_v,
         "wholeness": community.completeness,
         "purity": 100.0 - community.redundancy,
-        "collective_harmony": mean_v * (1.0 - community.redundancy / 100.0),
-        "n_uneasy": sum(1 for v in member_valences if v < 0.0),
+        "collective_fit": mean_v * (1.0 - community.redundancy / 100.0),
+        "n_uneasy": sum(1 for v in member_scores if v < 0.0),
     }
 
 

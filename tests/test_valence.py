@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test valence computation on real data."""
+"""Test fit score computation on real data."""
 
 import sys
 from pathlib import Path
@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
 from nclb.identity import build_identities, load_gfa_graph
-from nclb.valence import contig_valence, community_harmony, tnf_coherence, coverage_coherence
+from nclb.valence import contig_fit_score, community_metrics, tnf_coherence, coverage_coherence
 from nclb.graph import graph_connectivity
 
 RESULTS = Path("/data/danav2/20_mag_assembly/nextflow/results_lorbin_test")
@@ -32,59 +32,59 @@ identities, communities = build_identities(
 adjacency = load_gfa_graph(RESULTS / "assembly" / "assembly_graph.gfa")
 
 print("=" * 70)
-print("COMMUNITY HARMONY REPORT")
+print("COMMUNITY FIT REPORT")
 print("=" * 70)
 
-# Compute harmony for all communities, sorted by completeness
+# Compute metrics for all communities, sorted by completeness
 for comm in sorted(communities.values(), key=lambda c: -c.completeness)[:10]:
     members = [identities[n] for n in comm.members if n in identities]
     comm.tnf_coherence = tnf_coherence(members)
     comm.coverage_correlation = coverage_coherence(members)
     comm.graph_connectivity = graph_connectivity(comm.members, adjacency)
 
-    harmony = community_harmony(comm, identities, adjacency)
+    metrics = community_metrics(comm, identities, adjacency)
 
-    print(f"\n{comm.name} [{comm.elder_rank}]")
+    print(f"\n{comm.name} [{comm.quality_tier}]")
     print(f"  Members: {len(comm.members)}, Size: {comm.total_size:,} bp")
     print(f"  Wholeness: {comm.completeness:.0f}%, Redundancy: {comm.redundancy:.0f}%")
     print(f"  TNF coherence:     {comm.tnf_coherence:.4f}")
     print(f"  Coverage coherence: {comm.coverage_correlation:.4f}")
     print(f"  Graph connectivity: {comm.graph_connectivity:.4f}")
-    print(f"  Mean valence: {harmony['mean_valence']:+.3f}")
-    print(f"  Min valence:  {harmony['min_valence']:+.3f}")
-    print(f"  Uneasy members: {harmony['n_uneasy']}")
+    print(f"  Mean fit: {metrics['mean_fit']:+.3f}")
+    print(f"  Min fit:  {metrics['min_fit']:+.3f}")
+    print(f"  Uneasy members: {metrics['n_uneasy']}")
 
     # Show any uneasy members
-    if harmony['n_uneasy'] > 0:
+    if metrics['n_uneasy'] > 0:
         for name in comm.members:
             c = identities.get(name)
             if c:
-                v = contig_valence(c, comm, adjacency)
+                v = contig_fit_score(c, comm, adjacency)
                 if v < 0:
-                    print(f"    {name}: valence {v:+.3f}, GC={c.gc:.3f} "
+                    print(f"    {name}: fit_score {v:+.3f}, GC={c.gc:.3f} "
                           f"(community mean {comm.mean_gc:.3f}), "
-                          f"voice={c.voice_strength}/5")
+                          f"n_binners={c.n_binners}/5")
 
-# Check some unhoused contigs
+# Check some unbinned contigs
 print("\n" + "=" * 70)
-print("UNHOUSED CONTIGS WITH STRONGEST VOICE")
+print("UNBINNED CONTIGS WITH STRONGEST BINNER SUPPORT")
 print("=" * 70)
 
-unhoused_voiced = [c for c in identities.values()
-                   if c.community is None and c.voice_strength >= 4]
-unhoused_voiced.sort(key=lambda c: -c.size)
+unbinned_supported = [c for c in identities.values()
+                   if c.community is None and c.n_binners >= 4]
+unbinned_supported.sort(key=lambda c: -c.size)
 
-for c in unhoused_voiced[:10]:
-    # Find which community they resonate with most
+for c in unbinned_supported[:10]:
+    # Find which community they fit best
     best_comm = None
-    best_valence = -2.0
+    best_score = -2.0
     for comm in communities.values():
-        v = contig_valence(c, comm, adjacency)
-        if v > best_valence:
-            best_valence = v
+        v = contig_fit_score(c, comm, adjacency)
+        if v > best_score:
+            best_score = v
             best_comm = comm
 
-    print(f"\n{c.name} ({c.size:,} bp, GC={c.gc:.3f}, voice={c.voice_strength}/5)")
-    print(f"  Testimony: {c.testimony}")
+    print(f"\n{c.name} ({c.size:,} bp, GC={c.gc:.3f}, n_binners={c.n_binners}/5)")
+    print(f"  Binner assignments: {c.binner_assignments}")
     if best_comm:
-        print(f"  Best resonance: {best_comm.name} (valence {best_valence:+.3f})")
+        print(f"  Best fit: {best_comm.name} (score {best_score:+.3f})")

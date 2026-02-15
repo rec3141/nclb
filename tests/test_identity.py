@@ -33,23 +33,23 @@ print()
 
 # Population stats
 housed = sum(1 for c in identities.values() if c.community is not None)
-unhoused = len(identities) - housed
-voiced = sum(1 for c in identities.values() if c.voice_strength > 0)
-voiceless = sum(1 for c in identities.values() if c.voice_strength == 0 and c.community is None)
+unbinned = len(identities) - housed
+with_binners = sum(1 for c in identities.values() if c.n_binners > 0)
+no_binners = sum(1 for c in identities.values() if c.n_binners == 0 and c.community is None)
 graph_connected = sum(1 for c in identities.values() if c.connections)
 
 print(f"Housed:            {housed:,} ({100*housed/len(identities):.1f}%)")
-print(f"Unhoused:          {unhoused:,} ({100*unhoused/len(identities):.1f}%)")
-print(f"  with oracle voice: {voiced - housed:,}")
-print(f"  truly voiceless:   {voiceless:,}")
+print(f"Unbinned:          {unbinned:,} ({100*unbinned/len(identities):.1f}%)")
+print(f"  with binner support: {with_binners - housed:,}")
+print(f"  no binner support:   {no_binners:,}")
 print(f"Graph-connected:   {graph_connected:,}")
 print()
 
-# Elder hierarchy
-for rank in ["contigsattva", "sage", "full", "apprentice", "none"]:
-    n = sum(1 for c in communities.values() if c.elder_rank == rank)
+# Quality tiers
+for tier in ["excellent", "high", "good", "fair", "low"]:
+    n = sum(1 for c in communities.values() if c.quality_tier == tier)
     if n > 0:
-        print(f"  {rank:15s}: {n} communities")
+        print(f"  {tier:15s}: {n} communities")
 
 print()
 
@@ -58,7 +58,7 @@ print("Top 5 communities by completeness:")
 for comm in sorted(communities.values(), key=lambda c: -c.completeness)[:5]:
     print(f"  {comm.name:30s}  {comm.completeness:5.1f}% complete  "
           f"{comm.redundancy:4.1f}% redundant  {len(comm.members)} contigs  "
-          f"[{comm.elder_rank}]")
+          f"[{comm.quality_tier}]")
 
 print()
 
@@ -69,6 +69,6 @@ print(f"  Size: {sample.size:,} bp")
 print(f"  GC:   {sample.gc:.3f}")
 print(f"  Coverage: {sample.coverage}")
 print(f"  Connections: {len(sample.connections)} graph neighbors")
-print(f"  Voice strength: {sample.voice_strength}/5")
-print(f"  Testimony: {sample.testimony}")
-print(f"  Community: {sample.community or 'unhoused'}")
+print(f"  Binner count: {sample.n_binners}/5")
+print(f"  Binner assignments: {sample.binner_assignments}")
+print(f"  Community: {sample.community or 'unbinned'}")

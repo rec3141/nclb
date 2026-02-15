@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import numpy as np
 
 from nclb.identity import build_identities, load_gfa_graph, seed_communities_from_binner_agreement
-from nclb.valence import contig_valence, community_harmony, tnf_coherence, coverage_coherence
+from nclb.valence import contig_fit_score, community_metrics, tnf_coherence, coverage_coherence
 from nclb.graph import graph_connectivity, shared_edge_communities
 from nclb.resonance import ResonanceMap
 from nclb.landscape import (
@@ -54,13 +54,13 @@ def serialize_identity(c) -> dict:
         "multiplicity": c.multiplicity,
         "coverage": [round(float(x), 4) for x in c.coverage],
         "connections": c.connections,
-        "testimony": c.testimony,
-        "voice_strength": c.voice_strength,
+        "binner_assignments": c.binner_assignments,
+        "n_binners": c.n_binners,
         "community": c.community,
         "membership_type": c.membership_type,
-        "valence": round(c.valence, 4),
+        "fit_score": round(c.fit_score, 4),
         "ancestry": c.ancestry,
-        "gifts": c.gifts,
+        "gene_names": c.gene_names,
         "marker_genes": c.marker_genes,
     }
     # MGE annotations (only include if present)
@@ -113,13 +113,13 @@ def serialize_community(comm, harmony_report: dict) -> dict:
         "redundancy": round(comm.redundancy, 2),
         "contamination": round(comm.contamination, 2),
         "checkm2_completeness": round(comm.checkm2_completeness, 2),
-        "elder_rank": comm.elder_rank,
+        "quality_tier": comm.quality_tier,
         "tnf_coherence": round(comm.tnf_coherence, 4),
         "coverage_correlation": round(comm.coverage_correlation, 4),
         "graph_connectivity": round(comm.graph_connectivity, 4),
-        "mean_valence": round(harmony_report["mean_valence"], 4),
-        "min_valence": round(harmony_report["min_valence"], 4),
-        "collective_harmony": round(harmony_report["collective_harmony"], 4),
+        "mean_fit": round(harmony_report["mean_fit"], 4),
+        "min_fit": round(harmony_report["min_fit"], 4),
+        "collective_fit": round(harmony_report["collective_fit"], 4),
         "n_uneasy": harmony_report["n_uneasy"],
         "marker_gene_inventory": comm.marker_gene_inventory,
         "missing_markers": comm.missing_markers,
@@ -339,9 +339,9 @@ def main():
     else:
         log("[INFO] No additional communities seeded from binner agreement")
 
-    # --- Compute community harmony metrics ---
-    log("[INFO] Computing community harmony...")
-    harmony_reports = {}
+    # --- Compute community metrics ---
+    log("[INFO] Computing community metrics...")
+    metrics_reports = {}
     for comm_name, comm in communities.items():
         members = [identities[n] for n in comm.members if n in identities]
 
@@ -349,16 +349,16 @@ def main():
         comm.coverage_correlation = coverage_coherence(members)
         comm.graph_connectivity = graph_connectivity(comm.members, adjacency)
 
-        harmony = community_harmony(comm, identities, adjacency)
-        harmony_reports[comm_name] = harmony
+        metrics = community_metrics(comm, identities, adjacency)
+        metrics_reports[comm_name] = metrics
 
-    # --- Compute per-contig valence ---
-    log("[INFO] Computing contig valence scores...")
+    # --- Compute per-contig fit scores ---
+    log("[INFO] Computing contig fit scores...")
     for name, contig in identities.items():
         if contig.community and contig.community in communities:
-            contig.valence = contig_valence(contig, communities[contig.community], adjacency)
+            contig.fit_score = contig_fit_score(contig, communities[contig.community], adjacency)
         else:
-            contig.valence = -1.0  # unhoused baseline
+            contig.fit_score = -1.0  # unbinned baseline
 
     # --- Build resonance map ---
     log("[INFO] Building resonance map (KNN)...")
@@ -382,7 +382,7 @@ def main():
                     "tnf_similarity": round(c.tnf_similarity, 4),
                     "coverage_correlation": round(c.coverage_correlation, 4),
                     "graph_edges": c.graph_edges,
-                    "voice_agreement": c.voice_agreement,
+                    "binner_agreement": c.binner_agreement,
                     "score": round(c.score, 4),
                 }
                 for c in candidates
@@ -436,14 +436,14 @@ def main():
     # --- Assembly statistics ---
     housed = sum(1 for c in identities.values() if c.community is not None)
     unhoused = len(identities) - housed
-    voiced_unhoused = sum(
+    recognized_unbinned = sum(
         1 for c in identities.values()
-        if c.community is None and c.voice_strength > 0
+        if c.community is None and c.n_binners > 0
     )
     graph_connected = sum(1 for c in identities.values() if c.connections)
-    voiceless = sum(
+    unrecognized = sum(
         1 for c in identities.values()
-        if c.community is None and c.voice_strength == 0 and not c.connections
+        if c.community is None and c.n_binners == 0 and not c.connections
     )
 
     assembly_stats = {
@@ -451,9 +451,9 @@ def main():
         "total_communities": len(communities),
         "housed": housed,
         "unhoused": unhoused,
-        "voiced_unhoused": voiced_unhoused,
+        "recognized_unbinned": recognized_unbinned,
         "graph_connected": graph_connected,
-        "truly_voiceless": voiceless,
+        "unrecognized": unrecognized,
         "total_assembly_size": sum(c.size for c in identities.values()),
         "housed_size": sum(c.size for c in identities.values() if c.community),
         "unhoused_size": sum(c.size for c in identities.values() if not c.community),
@@ -461,8 +461,8 @@ def main():
 
     elder_counts = {}
     for comm in communities.values():
-        elder_counts[comm.elder_rank] = elder_counts.get(comm.elder_rank, 0) + 1
-    assembly_stats["elder_hierarchy"] = elder_counts
+        elder_counts[comm.quality_tier] = elder_counts.get(comm.quality_tier, 0) + 1
+    assembly_stats["quality_tiers"] = elder_counts
 
     # MGE stats
     n_viral = sum(1 for c in identities.values() if c.is_viral)
@@ -500,7 +500,7 @@ def main():
         "assembly_stats": assembly_stats,
         "community_names": community_display_names,
         "communities": {
-            name: serialize_community(comm, harmony_reports[name])
+            name: serialize_community(comm, metrics_reports[name])
             for name, comm in communities.items()
         },
         "resonance_candidates": resonance_candidates,
@@ -513,30 +513,30 @@ def main():
     }
 
     # Detailed uneasy member lists per community
-    for comm_name, harmony in harmony_reports.items():
-        if harmony["n_uneasy"] > 0:
+    for comm_name, metrics in metrics_reports.items():
+        if metrics["n_uneasy"] > 0:
             uneasy = []
             comm = communities[comm_name]
             for name in comm.members:
                 c = identities.get(name)
                 if c:
-                    v = contig_valence(c, comm, adjacency)
+                    v = contig_fit_score(c, comm, adjacency)
                     if v < 0:
                         # Graph neighbors in vs out of community
                         neighbors_in = [n for n in c.connections if n in comm.members]
                         neighbors_out = [n for n in c.connections if n not in comm.members]
                         entry = {
                             "contig": name,
-                            "valence": round(v, 4),
+                            "fit_score": round(v, 4),
                             "size": c.size,
                             "gc": round(c.gc, 4),
                             "community_mean_gc": round(comm.mean_gc, 4),
-                            "voice_strength": c.voice_strength,
+                            "n_binners": c.n_binners,
                             "coverage": [round(float(x), 4) for x in c.coverage],
                             "graph_neighbors_in_community": len(neighbors_in),
                             "graph_neighbors_outside": len(neighbors_out),
                             "total_graph_neighbors": len(c.connections),
-                            "testimony": c.testimony,
+                            "binner_assignments": c.binner_assignments,
                         }
                         if c.mge_type:
                             entry["mge_type"] = c.mge_type
@@ -555,9 +555,9 @@ def main():
     # Top unhoused contigs with voice (for Round 2)
     unhoused_voiced = [
         c for c in identities.values()
-        if c.community is None and c.voice_strength >= 2
+        if c.community is None and c.n_binners >= 2
     ]
-    unhoused_voiced.sort(key=lambda c: (-c.voice_strength, -c.size))
+    unhoused_voiced.sort(key=lambda c: (-c.n_binners, -c.size))
     for c in unhoused_voiced[:500]:
         gathering["unhoused_with_voice"].append(serialize_identity(c))
 
@@ -578,8 +578,8 @@ def main():
     log(f"  Communities:   {assembly_stats['total_communities']:>8}")
     log(f"  Housed:        {housed:>8,} ({100*housed/len(identities):.1f}%)")
     log(f"  Unhoused:      {unhoused:>8,} ({100*unhoused/len(identities):.1f}%)")
-    log(f"    with voice:  {voiced_unhoused:>8,}")
-    log(f"    voiceless:   {voiceless:>8,}")
+    log(f"    recognized by binners:  {recognized_unbinned:>8,}")
+    log(f"    unrecognized:{unrecognized:>8,}")
     log(f"    graph-linked:{graph_connected:>8,}")
     log(f"")
     n_dastool = sum(1 for c in communities.values() if not c.source_binner.startswith("binner-agreement"))
@@ -588,8 +588,8 @@ def main():
         log(f"    DAS Tool:    {n_dastool:>8}")
         log(f"    Binner-seeded:{n_seeded:>7}")
     log(f"")
-    log(f"  Elder hierarchy:")
-    for rank in ["contigsattva", "sage", "full", "apprentice", "none"]:
+    log(f"  Quality tiers:")
+    for rank in ["excellent", "high", "good", "fair", "low"]:
         n = elder_counts.get(rank, 0)
         if n > 0:
             log(f"    {rank:15s}: {n}")
@@ -644,7 +644,7 @@ def main():
                     f"{cl['total_size']/1e6:.1f}Mb @ ({cx:.1f}, {cy:.1f}){phylum}")
         log(f"")
 
-    total_uneasy = sum(h["n_uneasy"] for h in harmony_reports.values())
+    total_uneasy = sum(h["n_uneasy"] for h in metrics_reports.values())
     log(f"  Total uneasy members: {total_uneasy}")
     log(f"  Resonance candidates: {sum(len(v) for v in resonance_candidates.values())}")
     log(f"  Cross-community edges: {len(cross_edges)}")

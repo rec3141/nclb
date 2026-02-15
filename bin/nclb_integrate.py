@@ -22,11 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import numpy as np
 
 from nclb.identity import build_identities, load_gfa_graph, ContigIdentity, CommunityProfile
-from nclb.valence import contig_valence, community_harmony, tnf_coherence, coverage_coherence
+from nclb.valence import contig_fit_score, community_metrics, tnf_coherence, coverage_coherence
 from nclb.graph import graph_connectivity
 from nclb.mediator import extract_proposals, resolve_deterministic, apply_proposals
 from nclb.journal import (
-    build_chronicle, write_chronicle, write_contig_membership, write_valence_report,
+    build_chronicle, write_chronicle, write_contig_membership, write_fit_report,
 )
 
 
@@ -69,12 +69,12 @@ def extract_community_fastas(
                         f.write(seq[i:i+80] + "\n")
 
 
-def recompute_harmony(
+def recompute_metrics(
     communities: dict[str, CommunityProfile],
     identities: dict[str, ContigIdentity],
     adjacency: dict[str, list[str]],
 ):
-    """Recompute all harmony metrics after proposals are applied."""
+    """Recompute all fit metrics after proposals are applied."""
     for comm_name, comm in communities.items():
         members = [identities[n] for n in comm.members if n in identities]
         if not members:
@@ -90,12 +90,12 @@ def recompute_harmony(
         comm.tnf_centroid = np.mean([c.tnf for c in members], axis=0)
         comm.mean_coverage = np.mean([c.coverage for c in members], axis=0)
 
-    # Recompute all contig valences
+    # Recompute all contig fit scores
     for name, c in identities.items():
         if c.community and c.community in communities:
-            c.valence = contig_valence(c, communities[c.community], adjacency)
+            c.fit_score = contig_fit_score(c, communities[c.community], adjacency)
         else:
-            c.valence = -1.0
+            c.fit_score = -1.0
 
 
 def main():
@@ -216,8 +216,8 @@ def main():
     log(f"  New communities: {len(changes['new_communities_founded'])}")
 
     # --- Recompute harmony ---
-    log("[INFO] Recomputing harmony metrics...")
-    recompute_harmony(communities, identities, adjacency)
+    log("[INFO] Recomputing fit metrics...")
+    recompute_metrics(communities, identities, adjacency)
 
     # After stats
     housed_after = sum(1 for c in identities.values() if c.community)
@@ -232,11 +232,11 @@ def main():
         "housed_after": housed_after,
         "housed_after_pct": 100 * housed_after / len(identities),
         "delta_housed": housed_after - housed_before,
-        "elder_hierarchy": {},
+        "quality_tiers": {},
     }
     for comm in communities.values():
-        rank = comm.elder_rank
-        assembly_stats["elder_hierarchy"][rank] = assembly_stats["elder_hierarchy"].get(rank, 0) + 1
+        rank = comm.quality_tier
+        assembly_stats["quality_tiers"][rank] = assembly_stats["quality_tiers"].get(rank, 0) + 1
 
     # --- Build chronicle ---
     log("[INFO] Building chronicle...")
@@ -251,8 +251,8 @@ def main():
     # Membership tables
     write_contig_membership(identities, output_dir)
 
-    # Valence report
-    write_valence_report(identities, output_dir)
+    # Fit score report
+    write_fit_report(identities, output_dir)
 
     # Community FASTAs
     assembly_fasta = assembly_dir / "assembly.fasta"
@@ -266,15 +266,15 @@ def main():
     with open(quality_path, "w") as f:
         f.write("community\tn_members\ttotal_size\tcompleteness\tredundancy\t"
                 "tnf_coherence\tcov_correlation\tgraph_connectivity\t"
-                "mean_valence\tmin_valence\telder_rank\n")
+                "mean_fit\tmin_fit\tquality_tier\n")
         for name, comm in sorted(communities.items()):
-            harmony = community_harmony(comm, identities, adjacency)
+            metrics = community_metrics(comm, identities, adjacency)
             f.write(f"{name}\t{len(comm.members)}\t{comm.total_size}\t"
                     f"{comm.completeness:.2f}\t{comm.redundancy:.2f}\t"
                     f"{comm.tnf_coherence:.4f}\t{comm.coverage_correlation:.4f}\t"
                     f"{comm.graph_connectivity:.4f}\t"
-                    f"{harmony['mean_valence']:.4f}\t{harmony['min_valence']:.4f}\t"
-                    f"{comm.elder_rank}\n")
+                    f"{metrics['mean_fit']:.4f}\t{metrics['min_fit']:.4f}\t"
+                    f"{comm.quality_tier}\n")
 
     elapsed = time.time() - t0
 

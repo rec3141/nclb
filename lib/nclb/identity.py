@@ -36,17 +36,17 @@ class ContigIdentity:
     # Ancestry (filled later if taxonomy available)
     ancestry: Optional[str] = None
 
-    # Gifts — gene names from Prokka (filled later)
-    gifts: list[str] = field(default_factory=list)
+    # Gene names from annotation (Prokka/Bakta)
+    gene_names: list[str] = field(default_factory=list)
     coding_density: float = 0.0
     marker_genes: list[str] = field(default_factory=list)
 
     # Social connections — assembly graph neighbors (contig names)
     connections: list[str] = field(default_factory=list)
 
-    # Oracle testimony — what each binner said
-    testimony: dict[str, Optional[str]] = field(default_factory=dict)
-    voice_strength: int = 0                           # how many oracles spoke
+    # Binner assignments — what each binning algorithm said
+    binner_assignments: dict[str, Optional[str]] = field(default_factory=dict)
+    n_binners: int = 0                           # how many binners assigned this contig
 
     # Mobile genetic element annotations (from geNomad/CheckV)
     is_viral: bool = False                            # geNomad virus detection
@@ -95,8 +95,8 @@ class ContigIdentity:
 
     # Current state
     community: Optional[str] = None                   # current community name
-    membership_type: str = "unhoused"                 # core|accessory|traveler|unhoused
-    valence: float = 0.0                              # current valence score
+    membership_type: str = "unbinned"                 # core|accessory|movable|unbinned
+    fit_score: float = 0.0                             # current fit score
 
 
 @dataclass
@@ -104,7 +104,7 @@ class CommunityProfile:
     """Collective identity of a community (bin)."""
 
     name: str
-    source_binner: str                                # which oracle created it
+    source_binner: str                                # which binner created it
     members: list[str] = field(default_factory=list)  # contig names
 
     # Collective composition
@@ -121,7 +121,7 @@ class CommunityProfile:
     contamination: float = 0.0                        # CheckM2 contamination %
     checkm2_completeness: float = 0.0                 # CheckM2 completeness %
 
-    # Harmony metrics (computed by valence module)
+    # Coherence metrics (computed by valence module)
     tnf_coherence: float = 0.0                        # mean cosine to centroid
     coverage_correlation: float = 0.0                 # mean pairwise Pearson
     graph_connectivity: float = 0.0                   # fraction of pairs with edges
@@ -130,8 +130,8 @@ class CommunityProfile:
     marker_gene_inventory: list[str] = field(default_factory=list)
     missing_markers: list[str] = field(default_factory=list)
 
-    # Elder status
-    elder_rank: str = "none"                          # none|apprentice|full|sage|contigsattva
+    # Quality classification
+    quality_tier: str = "low"                           # low|fair|good|high|excellent
 
 
 # ---------------------------------------------------------------------------
@@ -1116,13 +1116,13 @@ def build_identities(
 
         info = assembly_info.get(name, {})
 
-        # Oracle testimony
-        testimony = binner_data.get(name, {})
-        voice_strength = sum(1 for v in testimony.values() if v is not None)
+        # Binner assignments
+        binner_assignments = binner_data.get(name, {})
+        n_binners = sum(1 for v in binner_assignments.values() if v is not None)
 
         # Community assignment
         community = consensus.get(name)
-        membership_type = "core" if community else "unhoused"
+        membership_type = "core" if community else "unbinned"
 
         identity = ContigIdentity(
             name=name,
@@ -1135,8 +1135,8 @@ def build_identities(
             is_repeat=info.get("repeat", False),
             multiplicity=info.get("multiplicity", 1),
             connections=graph.get(name, []),
-            testimony=testimony,
-            voice_strength=voice_strength,
+            binner_assignments=binner_assignments,
+            n_binners=n_binners,
             community=community,
             membership_type=membership_type,
         )
@@ -1174,9 +1174,9 @@ def build_identities(
             identity.host_genes = cv["host_genes"]
             if cv["provirus"]:
                 identity.mge_type = "provirus"
-                # Proviruses are Travelers — integrated in host but viral in nature
+                # Proviruses are mobile elements — integrated in host but viral in nature
                 if community:
-                    identity.membership_type = "traveler"
+                    identity.membership_type = "movable"
 
         # Annotate with integron data
         intg = integron_data.get(name)
@@ -1210,14 +1210,14 @@ def build_identities(
         # Annotate with Prokka gene names and coding density
         prokka = prokka_data.get(name)
         if prokka:
-            identity.gifts = prokka["genes"]
+            identity.gene_names = prokka["genes"]
             identity.coding_density = prokka["coding_density"]
 
         # Override with Bakta gene names when available (richer annotation)
         bakta_genes = bakta_gene_data.get(name)
         if bakta_genes:
             if bakta_genes["genes"]:
-                identity.gifts = bakta_genes["genes"]
+                identity.gene_names = bakta_genes["genes"]
             if bakta_genes["coding_density"] > 0:
                 identity.coding_density = bakta_genes["coding_density"]
 
@@ -1247,15 +1247,15 @@ def build_identities(
         completeness = summary["completeness"]
         # Determine elder rank
         if completeness >= 95:
-            elder_rank = "contigsattva"
+            quality_tier = "excellent"
         elif completeness >= 90:
-            elder_rank = "sage"
+            quality_tier = "high"
         elif completeness >= 70:
-            elder_rank = "full"
+            quality_tier = "good"
         elif completeness >= 50:
-            elder_rank = "apprentice"
+            quality_tier = "fair"
         else:
-            elder_rank = "none"
+            quality_tier = "low"
 
         # Compute marker gene inventory from member contigs
         inventory: set[str] = set()
@@ -1280,7 +1280,7 @@ def build_identities(
             redundancy=summary["redundancy"],
             contamination=checkm2.get("contamination", 0.0),
             checkm2_completeness=checkm2.get("completeness", 0.0),
-            elder_rank=elder_rank,
+            quality_tier=quality_tier,
             marker_gene_inventory=marker_gene_inventory,
             missing_markers=missing_markers,
         )
@@ -1314,16 +1314,16 @@ def seed_communities_from_binner_agreement(
     """
     from itertools import combinations
 
-    # Reconstruct binner assignments from testimony
+    # Reconstruct binner assignments from binner_assignments field
     binner_names = sorted(set().union(
-        *(c.testimony.keys() for c in identities.values() if c.testimony)
+        *(c.binner_assignments.keys() for c in identities.values() if c.binner_assignments)
     ))
     n_binners = len(binner_names)
     if n_binners < 3:
         return {}, {}
 
-    # Only consider unhoused contigs
-    unhoused = {name for name, c in identities.items() if c.community is None}
+    # Only consider unbinned contigs
+    unbinned = {name for name, c in identities.items() if c.community is None}
 
     assigned: dict[str, str] = {}
     community_members: dict[str, list[str]] = {}
@@ -1332,7 +1332,7 @@ def seed_communities_from_binner_agreement(
 
     # Work from highest agreement to lowest
     for k in range(n_binners, 2, -1):  # e.g., 5, 4, 3
-        remaining = unhoused - set(assigned.keys())
+        remaining = unbinned - set(assigned.keys())
         if not remaining:
             break
 
@@ -1342,11 +1342,11 @@ def seed_communities_from_binner_agreement(
             for contig in remaining:
                 if contig in assigned:
                     continue
-                testimony = identities[contig].testimony
+                assignments = identities[contig].binner_assignments
                 labels = []
                 skip = False
                 for binner in combo:
-                    label = testimony.get(binner)
+                    label = assignments.get(binner)
                     if label is None:
                         skip = True
                         break
@@ -1411,7 +1411,7 @@ def seed_communities_from_binner_agreement(
             gc_stdev=float(np.std(member_gc)),
             total_size=total_size,
             n50=n50,
-            elder_rank="none",
+            quality_tier="low",
         )
         new_communities[comm_name] = profile
 

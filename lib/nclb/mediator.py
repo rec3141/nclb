@@ -17,7 +17,7 @@ from typing import Optional
 import numpy as np
 
 from .identity import ContigIdentity, CommunityProfile
-from .valence import contig_valence
+from .valence import contig_fit_score
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ def extract_proposals(all_proposals: list[dict]) -> dict:
                         d["contig"],
                         d["community"],
                         d.get("evidence", ""),
-                        d.get("valence", 0.0),
+                        d.get("fit_score", 0.0),
                     ))
                 elif action == "wait":
                     waits.append((d["contig"], d.get("evidence", "")))
@@ -114,7 +114,7 @@ def detect_conflicts(proposals: dict) -> list[dict]:
             conflicts.append({
                 "type": "multi_claim",
                 "contig": contig,
-                "claims": [{"community": c, "valence": v} for c, v in claims],
+                "claims": [{"community": c, "fit_score": v} for c, v in claims],
             })
 
     # Contigs both released and recruited
@@ -145,8 +145,8 @@ def resolve_deterministic(
 ) -> dict:
     """Resolve proposals deterministically where possible.
 
-    For multi-claim conflicts, pick the community with highest valence.
-    For release+rejoin, allow the rejoin if valence is positive.
+    For multi-claim conflicts, pick the community with highest fit score.
+    For release+rejoin, allow the rejoin if fit score is positive.
 
     Returns resolved proposals in the same structure.
     """
@@ -170,7 +170,7 @@ def resolve_deterministic(
         if contig not in conflict_contigs:
             resolved_recruits.append((contig, community, reason))
 
-    # Resolve multi-claim conflicts by valence
+    # Resolve multi-claim conflicts by fit score
     for conflict in conflicts:
         if conflict["type"] == "multi_claim":
             contig_name = conflict["contig"]
@@ -184,7 +184,7 @@ def resolve_deterministic(
             for claim in conflict["claims"]:
                 comm = communities.get(claim["community"])
                 if comm:
-                    v = contig_valence(contig, comm, adjacency)
+                    v = contig_fit_score(contig, comm, adjacency)
                     if v > best_valence:
                         best_valence = v
                         best_community = claim["community"]
@@ -193,7 +193,7 @@ def resolve_deterministic(
                 resolved_joins.append((
                     contig_name,
                     best_community,
-                    f"Resolved multi-claim: highest valence ({best_valence:+.3f})",
+                    f"Resolved multi-claim: highest fit score ({best_valence:+.3f})",
                     best_valence,
                 ))
 
@@ -204,12 +204,12 @@ def resolve_deterministic(
             comm = communities.get(new_comm)
 
             if contig and comm:
-                v = contig_valence(contig, comm, adjacency)
+                v = contig_fit_score(contig, comm, adjacency)
                 if v > 0:
                     resolved_joins.append((
                         contig_name,
                         new_comm,
-                        f"Release+rejoin: positive valence ({v:+.3f}) in new community",
+                        f"Release+rejoin: positive fit score ({v:+.3f}) in new community",
                         v,
                     ))
 
@@ -230,14 +230,14 @@ def resolve_deterministic(
 MEDIATOR_SYSTEM = """You are the Mediator of the Assembly.
 
 You see all proposals from the three conversation rounds and resolve
-any remaining conflicts. Your goal is to maximize collective harmony
+any remaining conflicts. Your goal is to maximize collective coherence
 while respecting individual identity.
 
 Principles:
-1. A contig goes where its valence is highest
+1. A contig goes where its fit score is highest
 2. No contig should be forced into a community where it clashes
 3. If signals genuinely conflict, prefer "wait" over a bad placement
-4. New communities are welcome if their members truly resonate
+4. New communities are welcome if their members truly fit
 
 Respond with JSON only."""
 
@@ -252,7 +252,7 @@ def mediator_prompt(
     for c in conflicts:
         if c["type"] == "multi_claim":
             claims = ", ".join(
-                f"{cl['community']} (valence={cl['valence']:+.3f})"
+                f"{cl['community']} (fit_score={cl['fit_score']:+.3f})"
                 for cl in c["claims"]
             )
             conflict_desc += f"\n  {c['contig']} claimed by: {claims}"
@@ -280,7 +280,7 @@ Assembly context:
   Communities: {stats.get('total_communities', 0)}
 
 For each conflict, decide:
-- Which community gets the contig (highest valence wins by default)
+- Which community gets the contig (highest fit score wins by default)
 - Whether release+rejoin should be allowed
 
 Respond with:
@@ -322,8 +322,8 @@ def apply_proposals(
         c = identities.get(contig_name)
         if c and c.community == from_community:
             c.community = None
-            c.membership_type = "unhoused"
-            c.valence = -1.0
+            c.membership_type = "unbinned"
+            c.fit_score = -1.0
 
             comm = communities.get(from_community)
             if comm and contig_name in comm.members:
@@ -346,7 +346,7 @@ def apply_proposals(
         if c and comm and c.community is None:
             c.community = community
             c.membership_type = "core"
-            c.valence = valence
+            c.fit_score = valence
 
             if contig_name not in comm.members:
                 comm.members.append(contig_name)
@@ -355,7 +355,7 @@ def apply_proposals(
                 "contig": contig_name,
                 "to": community,
                 "evidence": evidence,
-                "valence": valence,
+                "fit_score": valence,
             })
 
     # Step 3: New communities
@@ -364,7 +364,7 @@ def apply_proposals(
             name=name,
             source_binner="nclb",
             members=members,
-            elder_rank="none",
+            quality_tier="low",
         )
 
         # Compute basic stats

@@ -254,20 +254,20 @@ def plot_landscape(
         if not c:
             categories.append("unknown")
             voices.append(0)
-            comm_labels.append("unhoused")
+            comm_labels.append("unbinned")
             sizes.append(0)
             continue
         sizes.append(c.size)
-        voices.append(c.voice_strength)
+        voices.append(c.n_binners)
         if c.community:
             categories.append("housed")
             comm_labels.append(c.community)
-        elif c.voice_strength == 0:
+        elif c.n_binners == 0:
             categories.append("voiceless")
-            comm_labels.append("unhoused")
+            comm_labels.append("unbinned")
         else:
             categories.append("voiced-unhoused")
-            comm_labels.append("unhoused")
+            comm_labels.append("unbinned")
 
     categories = np.array(categories)
     voices = np.array(voices)
@@ -294,7 +294,7 @@ def plot_landscape(
 
     # --- Panel 2: All named communities ---
     ax = axes[0, 1]
-    comm_counts = Counter(c for c in comm_labels if c != "unhoused")
+    comm_counts = Counter(c for c in comm_labels if c != "unbinned")
     all_comms = [c for c, _ in comm_counts.most_common()]
     n_comms = len(all_comms)
 
@@ -308,7 +308,7 @@ def plot_landscape(
         val = 0.65 + 0.3 * ((i * 5) % 11) / 10.0  # vary brightness
         comm_colors.append(colorsys.hsv_to_rgb(hue, sat, val))
 
-    unhoused_mask = np.array([c == "unhoused" for c in comm_labels])
+    unhoused_mask = np.array([c == "unbinned" for c in comm_labels])
     ax.scatter(xs[unhoused_mask], ys[unhoused_mask],
                c="#E0E0E0", s=2, alpha=0.2, zorder=1, rasterized=True)
 
