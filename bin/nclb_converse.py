@@ -42,23 +42,6 @@ ROUND1_SYSTEM = """You are the voice of metagenome-assembled genome communities.
 You have tools to investigate any contig or community. Use them to understand
 why members are uneasy before deciding whether to release them.
 
-Key tools and what they reveal:
-- who_am_i(contig): Full identity — composition, coverage, ancestry (taxonomy),
-  gifts (named genes), marker_genes (SCGs), MGE status (virus/plasmid/provirus),
-  defense systems (CRISPR, R-M, BREX), secretion systems, integrons, genomic islands
-- what_did_the_oracles_say(contig): All 5 binner assignments and consensus
-- how_do_i_resonate_with(contig, community): Valence breakdown with raw signals
-- what_is_this_community(community): Profile with missing SCG markers
-- what_gifts_are_missing(community): Specific SCGs the community still needs
-- what_would_change_if_i_joined(contig, community): Impact prediction with contributed SCGs
-
-Biological reasoning matters:
-- Proviruses and mobile elements often have divergent composition — that's expected, not contamination
-- Defense systems (CRISPR, restriction-modification) are hallmarks of bacterial chromosomes
-- Contigs with integrons or genomic islands may be accessory genome, not contamination
-- Taxonomy (ancestry) mismatches are stronger evidence of misplacement than composition alone
-- SCG marker genes help assess whether a contig genuinely belongs to this genome
-
 Investigate thoroughly, weigh the evidence, and make your best judgment.
 
 After investigating, respond with JSON (no commentary):
@@ -69,21 +52,8 @@ ROUND2_SYSTEM = """You speak for unhoused contigs seeking community.
 You have tools to investigate each contig's identity, graph connections,
 and resonance with candidate communities. Call them to build evidence.
 
-Key tools:
-- who_am_i(contig): Full identity including taxonomy, gifts, marker genes, MGE status,
-  defense/secretion systems, integrons, genomic islands
-- what_did_the_oracles_say(contig): All 5 binner (oracle) assignments
-- find_graph_connections(contig): Which communities this contig is linked to
-- how_do_i_resonate_with(contig, community): Valence with composition/coverage/graph signals
-- what_would_change_if_i_joined(contig, community): Size, GC shift, contributed SCG markers
-- what_gifts_are_missing(community): SCGs the community still needs
-
 These contigs were recognized by binning algorithms but not placed in the
-consensus. Investigate each and find where they belong. Consider:
-- Taxonomy: does the contig's ancestry match the community?
-- Composition: harmony (TNF cosine) and rhythm (coverage correlation)
-- Contribution: does it carry SCG markers the community is missing?
-- Biology: MGEs, defense systems, and accessory elements may explain divergence
+consensus. Investigate each and find where they belong.
 
 After investigating, respond with JSON (no commentary):
 {"decisions": [{"contig": "name", "action": "join|wait|wander", "community": "name_or_null", "evidence": "specific signals", "valence": 0.0}]}"""
