@@ -103,7 +103,7 @@ class ContigToolkit:
             "n_graph_neighbors": len(c.connections),
             "binner_assignments": c.binner_assignments,
             "n_binners": c.n_binners,
-            "community": self._display(c.community),
+            "bin": self._display(c.community),
             "membership_type": c.membership_type,
             "ancestry": c.ancestry,
             "gene_names": c.gene_names,
@@ -151,7 +151,7 @@ class ContigToolkit:
         return d
 
     def get_graph_neighbors(self, contig_name: str) -> dict:
-        """Assembly graph neighbors with their community status."""
+        """Assembly graph neighbors with their bin assignments."""
         c = self.identities.get(contig_name)
         if not c:
             return {"error": f"Unknown contig: {contig_name}"}
@@ -162,7 +162,7 @@ class ContigToolkit:
                 neighbors.append({
                     "name": n,
                     "size": nc.size,
-                    "community": self._display(nc.community),
+                    "bin": self._display(nc.community),
                     "gc": round(nc.gc, 4),
                 })
         return {"contig": contig_name, "neighbors": neighbors}
@@ -179,18 +179,18 @@ class ContigToolkit:
             "consensus": self._display(c.community),
         }
 
-    def compare_to_bin(self, contig_name: str, community_name: str) -> dict:
+    def compare_to_bin(self, contig_name: str, bin_name: str) -> dict:
         """Compute fit score of a contig against a specific bin.
 
         Returns both computed metrics AND raw data for the LLM to assess.
         """
-        community_name = self._resolve(community_name)
+        bin_name = self._resolve(bin_name)
         c = self.identities.get(contig_name)
-        comm = self.communities.get(community_name)
+        comm = self.communities.get(bin_name)
         if not c:
             return {"error": f"Unknown contig: {contig_name}"}
         if not comm:
-            return {"error": f"Unknown community: {community_name}"}
+            return {"error": f"Unknown bin: {bin_name}"}
 
         v = contig_fit_score(c, comm, self.adjacency)
 
@@ -211,7 +211,7 @@ class ContigToolkit:
 
         return {
             "contig": contig_name,
-            "community": self._display(community_name),
+            "bin": self._display(bin_name),
             "fit_score": round(v, 4),
             "tnf_cosine_similarity": round(tnf_cos, 4),
             "cov_pearson_r": round(cov_r, 4),
@@ -219,25 +219,25 @@ class ContigToolkit:
             "graph_neighbors_in_community": neighbors_in,
             "n_graph_neighbors_in": len(neighbors_in),
             "contig_coverage": [round(float(x), 6) for x in c.coverage],
-            "community_mean_coverage": [round(float(x), 6) for x in comm.mean_coverage] if comm.mean_coverage is not None else [],
+            "bin_mean_coverage": [round(float(x), 6) for x in comm.mean_coverage] if comm.mean_coverage is not None else [],
             "coverage_pattern_match": (
                 f"both detected in same {sum(1 for a, b in zip(c.coverage, comm.mean_coverage) if a > 0 and b > 0)} samples"
                 if comm.mean_coverage is not None and sum(1 for a, b in zip(c.coverage, comm.mean_coverage) if (a > 0) == (b > 0)) == len(c.coverage)
                 else "different detection patterns"
-            ) if comm.mean_coverage is not None else "no community coverage data",
+            ) if comm.mean_coverage is not None else "no bin coverage data",
             "contig_gc": round(c.gc, 4),
-            "community_mean_gc": round(comm.mean_gc, 4),
+            "bin_mean_gc": round(comm.mean_gc, 4),
             "gc_delta": round(abs(c.gc - comm.mean_gc), 4),
-            "community_completeness": round(comm.completeness, 2),
-            "community_quality_tier": comm.quality_tier,
+            "bin_completeness": round(comm.completeness, 2),
+            "bin_quality_tier": comm.quality_tier,
         }
 
-    def get_bin_info(self, community_name: str) -> dict:
-        """Full community profile."""
-        community_name = self._resolve(community_name)
-        comm = self.communities.get(community_name)
+    def get_bin_info(self, bin_name: str) -> dict:
+        """Full bin profile."""
+        bin_name = self._resolve(bin_name)
+        comm = self.communities.get(bin_name)
         if not comm:
-            return {"error": f"Unknown community: {community_name}"}
+            return {"error": f"Unknown bin: {bin_name}"}
         d = {
             "name": self._display(comm.name),
             "source_binner": comm.source_binner,
@@ -259,26 +259,26 @@ class ContigToolkit:
             d["mean_coverage_per_sample"] = [round(float(x), 6) for x in comm.mean_coverage]
         return d
 
-    def get_missing_markers(self, community_name: str) -> dict:
+    def get_missing_markers(self, bin_name: str) -> dict:
         """Marker genes the bin still needs."""
-        community_name = self._resolve(community_name)
-        comm = self.communities.get(community_name)
+        bin_name = self._resolve(bin_name)
+        comm = self.communities.get(bin_name)
         if not comm:
-            return {"error": f"Unknown community: {community_name}"}
+            return {"error": f"Unknown bin: {bin_name}"}
         return {
-            "community": self._display(community_name),
+            "bin": self._display(bin_name),
             "completeness": round(comm.completeness, 2),
             "missing_markers": comm.missing_markers,
             "n_missing": len(comm.missing_markers),
         }
 
-    def predict_join_impact(self, contig_name: str, community_name: str) -> dict:
+    def predict_join_impact(self, contig_name: str, bin_name: str) -> dict:
         """Predict impact of adding a contig to a bin."""
-        community_name = self._resolve(community_name)
+        bin_name = self._resolve(bin_name)
         c = self.identities.get(contig_name)
-        comm = self.communities.get(community_name)
+        comm = self.communities.get(bin_name)
         if not c or not comm:
-            return {"error": "Unknown contig or community"}
+            return {"error": "Unknown contig or bin"}
 
         # Size change
         new_size = comm.total_size + c.size
@@ -299,7 +299,7 @@ class ContigToolkit:
 
         return {
             "contig": contig_name,
-            "community": self._display(community_name),
+            "bin": self._display(bin_name),
             "size_delta": c.size,
             "new_total_size": new_size,
             "gc_shift": round(gc_shift, 4),
@@ -318,19 +318,19 @@ class ContigToolkit:
                 {
                     "name": name,
                     "similarity": round(sim, 4),
-                    "community": self._display(self.identities[name].community) if name in self.identities else None,
+                    "bin": self._display(self.identities[name].community) if name in self.identities else None,
                 }
                 for name, sim in neighbors
             ],
         }
 
     def find_graph_connections(self, contig_name: str) -> dict:
-        """Which communities is a contig graph-connected to?"""
+        """Which bins is a contig graph-connected to?"""
         bridges = find_graph_bridges(contig_name, self.communities, self.adjacency)
         return {
             "contig": contig_name,
-            "community_connections": [
-                {"community": self._display(name), "n_edges": n}
+            "bin_connections": [
+                {"bin": self._display(name), "n_edges": n}
                 for name, n in sorted(bridges.items(), key=lambda x: -x[1])
             ],
         }
@@ -401,7 +401,7 @@ CONTIG_TOOLS_ANTHROPIC = [
     },
     {
         "name": "get_graph_neighbors",
-        "description": "Returns assembly graph neighbors of a contig with their community status.",
+        "description": "Returns assembly graph neighbors of a contig with their bin assignments.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -428,9 +428,9 @@ CONTIG_TOOLS_ANTHROPIC = [
             "type": "object",
             "properties": {
                 "contig_name": {"type": "string", "description": "Name of the contig"},
-                "community_name": {"type": "string", "description": "Name of the community"},
+                "bin_name": {"type": "string", "description": "Name of the bin"},
             },
-            "required": ["contig_name", "community_name"],
+            "required": ["contig_name", "bin_name"],
         },
     },
     {
@@ -439,9 +439,9 @@ CONTIG_TOOLS_ANTHROPIC = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "community_name": {"type": "string", "description": "Name of the community"},
+                "bin_name": {"type": "string", "description": "Name of the bin"},
             },
-            "required": ["community_name"],
+            "required": ["bin_name"],
         },
     },
     {
@@ -450,9 +450,9 @@ CONTIG_TOOLS_ANTHROPIC = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "community_name": {"type": "string", "description": "Name of the community"},
+                "bin_name": {"type": "string", "description": "Name of the bin"},
             },
-            "required": ["community_name"],
+            "required": ["bin_name"],
         },
     },
     {
@@ -462,14 +462,14 @@ CONTIG_TOOLS_ANTHROPIC = [
             "type": "object",
             "properties": {
                 "contig_name": {"type": "string", "description": "Name of the contig"},
-                "community_name": {"type": "string", "description": "Name of the community"},
+                "bin_name": {"type": "string", "description": "Name of the bin"},
             },
-            "required": ["contig_name", "community_name"],
+            "required": ["contig_name", "bin_name"],
         },
     },
     {
         "name": "find_graph_connections",
-        "description": "Finds which communities a contig is connected to via the assembly graph.",
+        "description": "Finds which bins a contig is connected to via the assembly graph.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -513,13 +513,13 @@ CONTIG_TOOLS = CONTIG_TOOLS_ANTHROPIC
 # Prompt templates
 # ---------------------------------------------------------------------------
 
-ROUND1_SYSTEM = """You evaluate metagenome-assembled genome communities.
+ROUND1_SYSTEM = """You evaluate metagenome-assembled genome bins.
 
-Each community is a group of contigs that were placed together by consensus binning.
-You examine each community's collective state — its coherence, completeness, and the
+Each bin is a group of contigs that were placed together by consensus binning.
+You examine each bin's collective state — its coherence, completeness, and the
 composition of its members — and identify issues that need attention.
 
-You have tools to investigate individual contigs and communities. Use them to
+You have tools to investigate individual contigs and bins. Use them to
 build evidence before making recommendations.
 
 Respond with JSON only. No commentary outside the JSON."""
@@ -534,13 +534,13 @@ def round1_prompt(community: dict, uneasy: list[dict]) -> str:
             uneasy_table += (
                 f"  {u['contig']}: fit_score={u['valence']:+.3f}, "
                 f"size={u['size']:,}bp, GC={u['gc']:.3f} "
-                f"(community mean {u['community_mean_gc']:.3f}), "
+                f"(bin mean {u['community_mean_gc']:.3f}), "
                 f"binners={u['n_binners']}/5\n"
             )
 
-    return f"""Examine community {community['name']} [{community['quality_tier']}].
+    return f"""Examine bin {community['name']} [{community['quality_tier']}].
 
-Community state:
+Bin state:
   Members: {community.get('n_members', len(community.get('members', [])))}
   Total size: {community['total_size']:,} bp
   Wholeness: {community['completeness']:.1f}% complete
@@ -557,8 +557,8 @@ uncomfortable. Check their identity, graph connections, and binner assignments.
 
 Then respond with this JSON structure:
 {{
-  "community": "{community['name']}",
-  "assessment": "brief narrative of community health",
+  "bin": "{community['name']}",
+  "assessment": "brief narrative of bin health",
   "release": [
     {{
       "contig": "name",
@@ -568,31 +568,31 @@ Then respond with this JSON structure:
   "recruit": [
     {{
       "contig": "name",
-      "reason": "why this unhoused contig should join"
+      "reason": "why this unbinned contig should join"
     }}
   ],
   "concerns": ["any other observations"]
 }}"""
 
 
-ROUND2_SYSTEM = """You evaluate unhoused contigs seeking community placement.
+ROUND2_SYSTEM = """You evaluate unbinned contigs seeking bin placement.
 
 Each contig has been recognized by at least some binning algorithms
 but was not placed in the consensus. You investigate each contig's identity,
-connections, and fit with nearby communities to recommend placement.
+connections, and fit with nearby bins to recommend placement.
 
-You have tools to examine contigs, communities, and their relationships.
+You have tools to examine contigs, bins, and their relationships.
 Use them to build evidence. Do not guess — investigate.
 
-Prioritize contigs whose marker genes would increase a community's
-completeness. But never force a contig into a community where its composition
-clashes — that would harm the community's coherence.
+Prioritize contigs whose marker genes would increase a bin's
+completeness. But never force a contig into a bin where its composition
+clashes — that would harm the bin's coherence.
 
 Respond with JSON only."""
 
 
 def round2_prompt(contigs: list[dict], resonance: dict[str, list[dict]]) -> str:
-    """Prompt for Round 2: Unhoused contigs speak."""
+    """Prompt for Round 2: Unbinned contigs seek placement."""
     contig_summaries = []
     for c in contigs:
         res = resonance.get(c["name"], [])
@@ -613,9 +613,9 @@ def round2_prompt(contigs: list[dict], resonance: dict[str, list[dict]]) -> str:
 
     contig_list = "\n".join(contig_summaries)
 
-    return f"""You evaluate {len(contigs)} unhoused contigs seeking community placement.
+    return f"""You evaluate {len(contigs)} unbinned contigs seeking bin placement.
 
-Each has been assessed by the binning algorithms and measured against nearby communities.
+Each has been assessed by the binning algorithms and measured against nearby bins.
 Use your tools to investigate their identity, connections, and fit scores
 before making recommendations.
 
@@ -623,9 +623,9 @@ Contigs:
 {contig_list}
 
 For each contig, investigate using tools and then recommend:
-- "join" — if there's a clear fit with a community
+- "join" — if there's a clear fit with a bin
 - "wait" — if signals conflict (needs further investigation)
-- "wander" — if no community fits (may seed a new one)
+- "wander" — if no bin fits (may seed a new one)
 
 Respond with this JSON structure:
 {{
@@ -633,7 +633,7 @@ Respond with this JSON structure:
     {{
       "contig": "name",
       "action": "join|wait|wander",
-      "community": "community_name or null",
+      "bin": "bin_name or null",
       "evidence": "brief summary of investigation",
       "fit_score": 0.0
     }}
@@ -641,13 +641,13 @@ Respond with this JSON structure:
 }}"""
 
 
-ROUND3_SYSTEM = """You evaluate candidate new communities formed from unbinned contigs.
+ROUND3_SYSTEM = """You evaluate candidate new bins formed from unbinned contigs.
 
 These are contigs that no binner recognized and no graph connects to existing
-communities. They have been clustered by composition and abundance. You
+bins. They have been clustered by composition and abundance. You
 evaluate whether each cluster represents a real organism or noise.
 
-Signs of a real community:
+Signs of a real genome:
 - High composition similarity (>0.9 TNF cosine coherence)
 - Correlated coverage across samples
 - Consistent ancestry
@@ -672,9 +672,9 @@ def round3_prompt(clusters: list[dict]) -> str:
     cluster_list = "\n".join(cluster_summaries)
 
     return f"""{len(clusters)} clusters have emerged from the unbinned contigs —
-fragments that no binner recognized and no graph connects to existing communities.
+fragments that no binner recognized and no graph connects to existing bins.
 
-Candidate communities:
+Candidate bins:
 {cluster_list}
 
 Evaluate each: does it look like a real organism or noise?

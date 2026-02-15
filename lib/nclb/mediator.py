@@ -1,9 +1,9 @@
 """Mediator — conflict resolution across all proposals.
 
 After all three rounds of conversation, proposals may conflict:
-- Two communities want the same contig
-- A released contig may match a new community
-- New community clusters may overlap with existing ones
+- Two bins want the same contig
+- A released contig may match a new bin
+- New bin clusters may overlap with existing ones
 
 The Mediator sees all proposals and resolves conflicts with a single
 LLM call, then applies the results deterministically.
@@ -49,19 +49,19 @@ def extract_proposals(all_proposals: list[dict]) -> dict:
         result = proposal.get("result", {})
 
         if round_num == 1:
-            community = proposal.get("community", "")
+            bin_name = proposal.get("bin", "")
             for r in result.get("release", []):
-                releases.append((r["contig"], community, r.get("reason", "")))
+                releases.append((r["contig"], bin_name, r.get("reason", "")))
             for r in result.get("recruit", []):
-                recruits.append((r["contig"], community, r.get("reason", "")))
+                recruits.append((r["contig"], bin_name, r.get("reason", "")))
 
         elif round_num == 2:
             for d in result.get("decisions", []):
                 action = d.get("action", "wait")
-                if action == "join" and d.get("community"):
+                if action == "join" and d.get("bin"):
                     joins.append((
                         d["contig"],
-                        d["community"],
+                        d["bin"],
                         d.get("evidence", ""),
                         d.get("fit_score", 0.0),
                     ))
@@ -80,7 +80,7 @@ def extract_proposals(all_proposals: list[dict]) -> dict:
                         new_communities.append((
                             cluster_id,
                             matching[0]["member_names"],
-                            ev.get("suggested_name", f"new_community_{cluster_id}"),
+                            ev.get("suggested_name", f"new_bin_{cluster_id}"),
                             ev.get("reason", ""),
                         ))
 
@@ -114,7 +114,7 @@ def detect_conflicts(proposals: dict) -> list[dict]:
             conflicts.append({
                 "type": "multi_claim",
                 "contig": contig,
-                "claims": [{"community": c, "fit_score": v} for c, v in claims],
+                "claims": [{"bin": c, "fit_score": v} for c, v in claims],
             })
 
     # Contigs both released and recruited
@@ -182,12 +182,12 @@ def resolve_deterministic(
             best_valence = -2.0
 
             for claim in conflict["claims"]:
-                comm = communities.get(claim["community"])
+                comm = communities.get(claim["bin"])
                 if comm:
                     v = contig_fit_score(contig, comm, adjacency)
                     if v > best_valence:
                         best_valence = v
-                        best_community = claim["community"]
+                        best_community = claim["bin"]
 
             if best_community and best_valence > -0.5:
                 resolved_joins.append((
@@ -209,7 +209,7 @@ def resolve_deterministic(
                     resolved_joins.append((
                         contig_name,
                         new_comm,
-                        f"Release+rejoin: positive fit score ({v:+.3f}) in new community",
+                        f"Release+rejoin: positive fit score ({v:+.3f}) in new bin",
                         v,
                     ))
 
@@ -235,9 +235,9 @@ while respecting individual identity.
 
 Principles:
 1. A contig goes where its fit score is highest
-2. No contig should be forced into a community where it clashes
+2. No contig should be forced into a bin where it clashes
 3. If signals genuinely conflict, prefer "wait" over a bad placement
-4. New communities are welcome if their members truly fit
+4. New bins are welcome if their members truly fit
 
 Respond with JSON only."""
 
@@ -252,7 +252,7 @@ def mediator_prompt(
     for c in conflicts:
         if c["type"] == "multi_claim":
             claims = ", ".join(
-                f"{cl['community']} (fit_score={cl['fit_score']:+.3f})"
+                f"{cl['bin']} (fit_score={cl['fit_score']:+.3f})"
                 for cl in c["claims"]
             )
             conflict_desc += f"\n  {c['contig']} claimed by: {claims}"
@@ -269,7 +269,7 @@ Summary:
   Joins: {len(proposals['joins'])}
   Waits: {len(proposals['waits'])}
   Wanders: {len(proposals['wanders'])}
-  New communities: {len(proposals['new_communities'])}
+  New bins: {len(proposals['new_communities'])}
   Recruits: {len(proposals['recruits'])}
 
 Conflicts requiring resolution:{conflict_desc or " (none)"}
@@ -277,10 +277,10 @@ Conflicts requiring resolution:{conflict_desc or " (none)"}
 Assembly context:
   Total contigs: {stats.get('total_contigs', 0):,}
   Currently housed: {stats.get('housed', 0):,}
-  Communities: {stats.get('total_communities', 0)}
+  Bins: {stats.get('total_communities', 0)}
 
 For each conflict, decide:
-- Which community gets the contig (highest fit score wins by default)
+- Which bin gets the contig (highest fit score wins by default)
 - Whether release+rejoin should be allowed
 
 Respond with:
@@ -289,11 +289,11 @@ Respond with:
     {{
       "contig": "name",
       "action": "join|release|wait",
-      "community": "target_community or null",
+      "bin": "target_bin or null",
       "reason": "brief explanation"
     }}
   ],
-  "approved_new_communities": [cluster_id, ...],
+  "approved_new_bins": [cluster_id, ...],
   "commentary": "overall assessment"
 }}"""
 

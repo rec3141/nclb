@@ -47,26 +47,26 @@ Available tools:
 - get_contig_info(contig): size, GC%, coverage, taxonomy, domain (prokaryotic/eukaryotic/organellar), gene names, marker_genes (SCGs), n_cds, MGE status (viral/plasmid/provirus), defense systems, integrons, secretion systems, genomic islands, binner agreement (n_binners)
 - get_graph_neighbors(contig): assembly graph neighbors with their bin assignments
 - get_binner_assignments(contig): per-binner assignments, agreement count, consensus placement
-- compare_to_bin(contig, community): fit score, TNF cosine similarity, coverage Pearson r, graph neighbor fraction, GC comparison
-- get_bin_info(community): members, total size, GC range, completeness, contamination, coverage profile, coherence metrics, quality tier, marker gene inventory
-- get_missing_markers(community): marker genes the bin still needs for completeness
-- predict_join_impact(contig, community): predicted size/GC shift, new marker gene contributions
+- compare_to_bin(contig, bin_name): fit score, TNF cosine similarity, coverage Pearson r, graph neighbor fraction, GC comparison
+- get_bin_info(bin_name): members, total size, GC range, completeness, contamination, coverage profile, coherence metrics, quality tier, marker gene inventory
+- get_missing_markers(bin_name): marker genes the bin still needs for completeness
+- predict_join_impact(contig, bin_name): predicted size/GC shift, new marker gene contributions
 - find_graph_connections(contig): which bins this contig connects to via assembly graph
 - read_annotations(contig, page=1): paginated CDS annotation table (20 features per page)
 
 Actions you can recommend:
-- RELEASE a contig: remove it from this community (it becomes unbinned). Only release
+- RELEASE a contig: remove it from this bin (it becomes unbinned). Only release
   contigs that clearly do not belong — e.g. different taxonomy, wildly different GC/coverage,
   no graph connections, low binner agreement. Strong binner agreement (n_binners >= 3) is evidence
   a contig BELONGS, not a reason to release it.
-- SPLIT the community: if you find the community contains two or more distinct groups
+- SPLIT the bin: if you find the bin contains two or more distinct groups
   (different phyla, divergent coverage patterns, bimodal GC), recommend splitting it.
   List which contigs belong to each proposed sub-group.
 
 Investigate thoroughly, weigh the evidence, and make your best judgment.
 
 After investigating, respond with JSON (no commentary):
-{"community": "name", "assessment": "narrative", "release": [{"contig": "name", "reason": "evidence"}], "split": [{"name": "descriptive label", "members": ["contig1", "contig2"]}], "concerns": []}"""
+{"bin": "name", "assessment": "narrative", "release": [{"contig": "name", "reason": "evidence"}], "split": [{"name": "descriptive label", "members": ["contig1", "contig2"]}], "concerns": []}"""
 
 ROUND2_SYSTEM = """You evaluate unbinned contigs seeking bin placement.
 
@@ -77,28 +77,28 @@ Available tools:
 - get_contig_info(contig): size, GC%, coverage, taxonomy, domain (prokaryotic/eukaryotic/organellar), gene names, marker_genes (SCGs), n_cds, MGE status (viral/plasmid/provirus), defense systems, integrons, secretion systems, genomic islands, binner agreement (n_binners)
 - get_graph_neighbors(contig): assembly graph neighbors with their bin assignments
 - get_binner_assignments(contig): per-binner assignments, agreement count, consensus placement
-- compare_to_bin(contig, community): fit score, TNF cosine similarity, coverage Pearson r, graph neighbor fraction, GC comparison
-- get_bin_info(community): members, total size, GC range, completeness, contamination, coverage profile, coherence metrics, quality tier, marker gene inventory
-- get_missing_markers(community): marker genes the bin still needs for completeness
-- predict_join_impact(contig, community): predicted size/GC shift, new marker gene contributions
+- compare_to_bin(contig, bin_name): fit score, TNF cosine similarity, coverage Pearson r, graph neighbor fraction, GC comparison
+- get_bin_info(bin_name): members, total size, GC range, completeness, contamination, coverage profile, coherence metrics, quality tier, marker gene inventory
+- get_missing_markers(bin_name): marker genes the bin still needs for completeness
+- predict_join_impact(contig, bin_name): predicted size/GC shift, new marker gene contributions
 - find_graph_connections(contig): which bins this contig connects to via assembly graph
 - read_annotations(contig, page=1): paginated CDS annotation table (20 features per page)
 
 These contigs were recognized by binning algorithms but not placed in the
 consensus. Investigate each and find where they belong.
 
-CRITICAL: Only use community names that appear in your prompt's candidate list or
+CRITICAL: Only use bin names that appear in your prompt's candidate list or
 that are returned by find_graph_connections() / get_graph_neighbors() tool calls.
 The binner_assignments field in get_contig_info() shows per-binner bin IDs (e.g. "semibin_074")
-which are NOT valid community names — never use binner IDs as community names.
-Never invent or guess community names. If no valid community is found, use "wait".
+which are NOT valid bin names — never use binner IDs as bin names.
+Never invent or guess bin names. If no valid bin is found, use "wait".
 
 After investigating, respond with JSON (no commentary):
-{"decisions": [{"contig": "name", "action": "join|wait|wander", "community": "name_or_null", "evidence": "specific signals", "fit_score": 0.0}]}"""
+{"decisions": [{"contig": "name", "action": "join|wait|wander", "bin": "name_or_null", "evidence": "specific signals", "fit_score": 0.0}]}"""
 
-ROUND3_SYSTEM = """You evaluate candidate new communities formed from unbinned contigs.
+ROUND3_SYSTEM = """You evaluate candidate new bins formed from unbinned contigs.
 
-Signs of a real community: TNF coherence >0.9, synchronized coverage across
+Signs of a real genome: TNF coherence >0.9, synchronized coverage across
 samples, reasonable genome size, consistent ancestry.
 
 Respond with JSON (no commentary):
@@ -176,15 +176,15 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         )
 
     if tool_name == "find_graph_connections":
-        conns = result.get("community_connections", [])
+        conns = result.get("bin_connections", [])
         if conns:
-            top = ", ".join(f"{c['community']}({c['n_edges']})" for c in conns[:3])
-            return f"{len(conns)} communities: {top}"
+            top = ", ".join(f"{c['bin']}({c['n_edges']})" for c in conns[:3])
+            return f"{len(conns)} bins: {top}"
         return "no graph connections"
 
     if tool_name == "get_graph_neighbors":
         neighbors = result.get("neighbors", [])
-        housed = sum(1 for n in neighbors if n.get("community"))
+        housed = sum(1 for n in neighbors if n.get("bin"))
         return f"{len(neighbors)} neighbors ({housed} housed)"
 
     if tool_name == "read_annotations":
@@ -427,7 +427,7 @@ def round1_prompt(comm_name: str, comm_data: dict, uneasy_names: list[str],
 
     shown_name = display_name or comm_name
     quality = comm_data.get('quality_tier', 'none')
-    return f"""Examine community "{shown_name}".
+    return f"""Examine bin "{shown_name}".
 
 Quick overview:
   Quality tier: {quality}
@@ -462,17 +462,17 @@ def round2_prompt(
     contig_section = "\n".join(lines)
     return f"""You evaluate {len(contig_names)} unbinned contigs seeking bin placement.
 
-Contigs and their candidate communities:
+Contigs and their candidate bins:
 {contig_section}
 
 For each contig:
 1. Call get_contig_info() to learn its full identity
-2. Call compare_to_bin(contig, community) for the candidate communities listed above
-3. If no candidates are listed, call find_graph_connections() to discover communities
-4. Decide: join (specify the community name exactly as listed), wait, or wander
+2. Call compare_to_bin(contig, bin_name) for the candidate bins listed above
+3. If no candidates are listed, call find_graph_connections() to discover bins
+4. Decide: join (specify the bin name exactly as listed), wait, or wander
 
-IMPORTANT: Only use community names from the candidate list above or from tool results.
-Binner bin IDs like "semibin_074" are NOT community names. Never invent names.
+IMPORTANT: Only use bin names from the candidate list above or from tool results.
+Binner IDs like "semibin_074" are NOT bin names. Never invent names.
 
 Investigate each contig and recommend placement."""
 
@@ -487,7 +487,7 @@ def round3_prompt(clusters: list[dict]) -> str:
             f"Coverage correlation={cl.get('coverage_correlation', 0):.3f}, "
             f"Mean GC={cl.get('mean_gc', 0):.3f}"
         )
-    return f"""{len(clusters)} clusters emerged from voiceless contigs.
+    return f"""{len(clusters)} clusters emerged from unbinned contigs.
 
 CANDIDATES:
 {chr(10).join(lines)}
@@ -828,8 +828,8 @@ def main():
         if not uneasy:
             log(f"  {comm_name}: 0 uneasy, skipping")
             all_proposals.append({
-                "round": 1, "community": comm_name,
-                "result": {"community": comm_name, "assessment": "All members content", "release": []},
+                "round": 1, "bin": comm_name,
+                "result": {"bin": comm_name, "assessment": "All members content", "release": []},
             })
             continue
 
@@ -848,7 +848,7 @@ def main():
                 parts.append(f"{n_splits} splits")
             log(f"  {comm_name}: {', '.join(parts)} ({n_tc} tool calls)")
             all_proposals.append({
-                "round": 1, "community": comm_name, "result": result,
+                "round": 1, "bin": comm_name, "result": result,
             })
         except Exception as e:
             log(f"  [ERROR] {comm_name}: {e}")
@@ -904,17 +904,17 @@ def main():
             # Translate festive display names back to internal names
             festive_to_internal = {v: k for k, v in community_names.items()}
             for d in result.get("decisions", []):
-                if d.get("action") == "join" and d.get("community"):
-                    raw_name = d["community"]
+                if d.get("action") == "join" and d.get("bin"):
+                    raw_name = d["bin"]
                     internal = festive_to_internal.get(raw_name)
                     if internal:
                         d["display_name"] = raw_name
-                        d["community"] = internal
+                        d["bin"] = internal
                     elif raw_name not in communities:
-                        # LLM invented a community name — downgrade to "wait"
-                        log(f"    [WARNING] '{raw_name}' is not a valid community — converting join→wait for {d.get('contig', '?')}")
+                        # LLM invented a bin name — downgrade to "wait"
+                        log(f"    [WARNING] '{raw_name}' is not a valid bin — converting join→wait for {d.get('contig', '?')}")
                         d["action"] = "wait"
-                        d["community"] = None
+                        d["bin"] = None
                         d["evidence"] = f"(original: join {raw_name}) {d.get('evidence', '')}"
             n_decisions = len(result.get("decisions", []))
             n_joins = sum(1 for d in result.get("decisions", []) if d.get("action") == "join")

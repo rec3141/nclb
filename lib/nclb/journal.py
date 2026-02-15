@@ -2,7 +2,7 @@
 
 Generates narrative accounts of the NCLB process in both JSON and
 markdown. Every decision is documented: why a contig was placed,
-why a community was founded, what an Elder discovered.
+why a bin was founded, what an Elder discovered.
 
 The chronicle is not just documentation — it is a new form of
 scientific output that a microbiologist can read, audit, and learn from.
@@ -61,7 +61,7 @@ class Chronicle:
         lines.append("")
         lines.append(f"- **Total contigs**: {stats.get('total_contigs', 0):,}")
         lines.append(f"- **Total size**: {stats.get('total_assembly_size', 0):,} bp")
-        lines.append(f"- **Communities**: {stats.get('total_communities', 0)}")
+        lines.append(f"- **Bins**: {stats.get('total_communities', 0)}")
         lines.append(f"- **Housed before NCLB**: {stats.get('housed_before', 0):,} "
                       f"({stats.get('housed_before_pct', 0):.1f}%)")
         lines.append(f"- **Housed after NCLB**: {stats.get('housed_after', 0):,} "
@@ -79,7 +79,7 @@ class Chronicle:
         if self.community_stories:
             lines.append("---")
             lines.append("")
-            lines.append("## Community Reports")
+            lines.append("## Bin Reports")
             lines.append("")
             for story in self.community_stories:
                 lines.append(story.to_markdown())
@@ -100,15 +100,15 @@ class Chronicle:
                 if story.get("evidence"):
                     lines.append(f"> {story['evidence']}")
                     lines.append("")
-                lines.append(f"Joined **{story['community']}** "
-                              f"(fit_score {story.get('fit_score', 0):+.3f})")
+                lines.append(f"Joined **{story['bin']}** "
+                              f"(fit score {story.get('fit_score', 0):+.3f})")
                 lines.append("")
 
         # New communities
         if self.new_community_stories:
             lines.append("---")
             lines.append("")
-            lines.append("## New Communities Founded")
+            lines.append("## New Bins Founded")
             lines.append("")
             for story in self.new_community_stories:
                 lines.append(f"### {story['name']}")
@@ -164,7 +164,7 @@ class Chronicle:
         summary = self.summary
         lines.append(f"- Contigs released: {summary.get('n_released', 0)}")
         lines.append(f"- Contigs placed: {summary.get('n_placed', 0)}")
-        lines.append(f"- New communities: {summary.get('n_new_communities', 0)}")
+        lines.append(f"- New bins: {summary.get('n_new_communities', 0)}")
         lines.append(f"- Mobile elements identified: {summary.get('n_travelers', 0)}")
         lines.append(f"- Elder investigations: {summary.get('n_elder_investigations', 0)}")
         lines.append("")
@@ -173,7 +173,7 @@ class Chronicle:
 
 
 class CommunityStory:
-    """Narrative for a single community's experience during NCLB."""
+    """Narrative for a single bin's experience during NCLB."""
 
     def __init__(self, community: CommunityProfile):
         self.name = community.name
@@ -279,7 +279,7 @@ def build_chronicle(
         if contig:
             chronicle.unhoused_stories.append({
                 "contig": joined["contig"],
-                "community": joined["to"],
+                "bin": joined["to"],
                 "evidence": joined.get("evidence", ""),
                 "fit_score": joined.get("fit_score", 0.0),
                 "size": contig.size,

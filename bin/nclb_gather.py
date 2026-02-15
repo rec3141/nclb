@@ -2,7 +2,7 @@
 """Gathering 1: Self-Knowledge.
 
 Reads all pipeline outputs, builds identity cards for every contig,
-computes community profiles with harmony metrics, and outputs
+computes bin profiles with harmony metrics, and outputs
 a gathering.json for the Conversations phase.
 
 Usage:
@@ -56,7 +56,7 @@ def serialize_identity(c) -> dict:
         "connections": c.connections,
         "binner_assignments": c.binner_assignments,
         "n_binners": c.n_binners,
-        "community": c.community,
+        "bin": c.community,
         "membership_type": c.membership_type,
         "fit_score": round(c.fit_score, 4),
         "ancestry": c.ancestry,
@@ -128,7 +128,7 @@ def serialize_community(comm, harmony_report: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="NCLB Gathering 1: Build contig identity cards and community profiles"
+        description="NCLB Gathering 1: Build contig identity cards and bin profiles"
     )
     parser.add_argument(
         "--results", "-r", type=Path, required=True,
@@ -148,7 +148,7 @@ def main():
     )
     parser.add_argument(
         "--resonance-max-candidates", type=int, default=50,
-        help="Max resonance candidates per community (default: 50)"
+        help="Max resonance candidates per bin (default: 50)"
     )
     parser.add_argument(
         "--quiet", "-q", action="store_true",
@@ -188,7 +188,7 @@ def main():
     # Optional CheckM2
     checkm2_path = binning_dir / "checkm2" / "quality_report.tsv"
     if not checkm2_path.exists():
-        log("[WARNING] No CheckM2 results found — community quality will use DAS Tool SCG metrics only")
+        log("[WARNING] No CheckM2 results found — bin quality will use DAS Tool SCG metrics only")
         checkm2_path = None
 
     # Optional MGE data (geNomad + CheckV)
@@ -295,7 +295,7 @@ def main():
         bacteria_scg_path=bacteria_scg if bacteria_scg.exists() else None,
         archaea_scg_path=archaea_scg if archaea_scg.exists() else None,
     )
-    log(f"[INFO] {len(identities):,} contigs, {len(communities)} communities")
+    log(f"[INFO] {len(identities):,} contigs, {len(communities)} bins")
 
     # --- Load assembly graph ---
     log("[INFO] Parsing assembly graph...")
@@ -303,7 +303,7 @@ def main():
     log(f"[INFO] {len(adjacency):,} contigs with graph connections")
 
     # --- Seed communities from binner agreement ---
-    log("[INFO] Seeding communities from binner agreement (3+ majority)...")
+    log("[INFO] Seeding bins from binner agreement (3+ majority)...")
     new_comms, binner_assigned = seed_communities_from_binner_agreement(identities)
 
     # Load full SCG set for marker gene inventory on seeded communities
@@ -329,7 +329,7 @@ def main():
             comm.missing_markers = sorted(full_scg_set - inventory) if full_scg_set else []
         # Merge into communities
         communities.update(new_comms)
-        log(f"[INFO] Seeded {len(new_comms)} new communities from binner agreement "
+        log(f"[INFO] Seeded {len(new_comms)} new bins from binner agreement "
             f"({len(binner_assigned):,} contigs)")
         # Break down by agreement level
         from collections import Counter as _Counter
@@ -337,10 +337,10 @@ def main():
         for level, count in sorted(levels.items()):
             log(f"  {level}: {count} communities")
     else:
-        log("[INFO] No additional communities seeded from binner agreement")
+        log("[INFO] No additional bins seeded from binner agreement")
 
     # --- Compute community metrics ---
-    log("[INFO] Computing community metrics...")
+    log("[INFO] Computing bin metrics...")
     metrics_reports = {}
     for comm_name, comm in communities.items():
         members = [identities[n] for n in comm.members if n in identities]
@@ -367,7 +367,7 @@ def main():
     )
 
     # Find resonance candidates for each community
-    log("[INFO] Finding resonance candidates for each community...")
+    log("[INFO] Finding resonance candidates for each bin...")
     resonance_candidates = {}
     for comm_name, comm in communities.items():
         candidates = resonance_map.find_resonant_contigs(
@@ -415,7 +415,7 @@ def main():
         log("[WARNING] Could not compute landscape (too few contigs)")
 
     # --- Name communities ---
-    log("[INFO] Naming communities...")
+    log("[INFO] Naming bins...")
     community_display_names = name_communities(sorted(communities.keys()))
     for internal, display in sorted(community_display_names.items(),
                                      key=lambda x: communities[x[0]].total_size,
@@ -430,7 +430,7 @@ def main():
         log(f"[INFO] Saved landscape plot to {plot_path}")
 
     # --- Find inter-community graph bridges ---
-    log("[INFO] Finding inter-community graph connections...")
+    log("[INFO] Finding inter-bin graph connections...")
     cross_edges = shared_edge_communities(communities, adjacency)
 
     # --- Assembly statistics ---
@@ -575,7 +575,7 @@ def main():
     log("=" * 70)
     log(f"")
     log(f"  Contigs:       {assembly_stats['total_contigs']:>8,}")
-    log(f"  Communities:   {assembly_stats['total_communities']:>8}")
+    log(f"  Bins:          {assembly_stats['total_communities']:>8}")
     log(f"  Housed:        {housed:>8,} ({100*housed/len(identities):.1f}%)")
     log(f"  Unhoused:      {unhoused:>8,} ({100*unhoused/len(identities):.1f}%)")
     log(f"    recognized by binners:  {recognized_unbinned:>8,}")
@@ -647,7 +647,7 @@ def main():
     total_uneasy = sum(h["n_uneasy"] for h in metrics_reports.values())
     log(f"  Total uneasy members: {total_uneasy}")
     log(f"  Resonance candidates: {sum(len(v) for v in resonance_candidates.values())}")
-    log(f"  Cross-community edges: {len(cross_edges)}")
+    log(f"  Cross-bin edges: {len(cross_edges)}")
     log(f"")
     log(f"  Output: {output_path}")
     log(f"  Time:   {elapsed:.1f}s")

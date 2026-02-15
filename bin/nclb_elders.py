@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Elder Investigations: SCG Redundancy Analysis.
 
-For each community with sufficient completeness and redundant single-copy
+For each bin with sufficient completeness and redundant single-copy
 markers, Elders investigate whether the redundancy represents contamination
 or ecotype variation (population-level diversity).
 
@@ -9,7 +9,7 @@ Investigation workflow per redundant marker:
   1. Identify contigs carrying duplicate copies
   2. Compare their taxonomy (Kaiju ancestry) — same species?
   3. Compare their composition (TNF cosine, GC) — how divergent?
-  4. Compute ANI between variant-carrying contigs and community backbone
+  4. Compute ANI between variant-carrying contigs and bin backbone
   5. Check if variants are on MGE contigs (proviruses, plasmids, islands)
   6. Render verdict: ecotype | contamination | mge | uncertain
 
@@ -53,7 +53,7 @@ def investigate_redundancy(
     toolkit: ElderToolkit | None = None,
     assembly_seqs: dict[str, str] | None = None,
 ) -> dict:
-    """Investigate a single redundant marker in a community.
+    """Investigate a single redundant marker in a bin.
 
     Returns a report dict with evidence and verdict.
     """
@@ -246,7 +246,7 @@ def render_verdict(report: dict) -> dict:
     )
     if all_connected:
         score_ecotype += 0.1
-        reasons.append("All carriers are graph-connected to community backbone")
+        reasons.append("All carriers are graph-connected to bin backbone")
 
     # Final classification
     if score_ecotype >= 0.3:
@@ -275,7 +275,7 @@ def render_verdict(report: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="NCLB Elder Investigations: analyze SCG redundancy"
+        description="NCLB Elder Investigations: analyze SCG redundancy per bin"
     )
     parser.add_argument(
         "--results", "-r", type=Path, required=True,
@@ -364,7 +364,7 @@ def main():
         prokka_gff_path=prokka_gff_path,
     )
     adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
-    log(f"[INFO] Loaded {len(identities):,} contigs, {len(communities)} communities")
+    log(f"[INFO] Loaded {len(identities):,} contigs, {len(communities)} bins")
 
     # --- Load assembly sequences if ANI requested ---
     assembly_seqs = None
@@ -403,7 +403,7 @@ def main():
         if rank_order.get(comm.quality_tier, 0) >= min_rank_val
         and comm.redundancy > 0
     }
-    log(f"  Communities with rank >= {args.min_rank} and redundancy > 0: {len(eligible)}")
+    log(f"  Bins with rank >= {args.min_rank} and redundancy > 0: {len(eligible)}")
 
     all_reports = []
     total_redundant = 0
@@ -423,7 +423,7 @@ def main():
         log(f"  {comm_name} [{comm.quality_tier}]: {len(redundant_markers)} redundant marker(s)")
 
         community_report = {
-            "community": comm_name,
+            "bin": comm_name,
             "quality_tier": comm.quality_tier,
             "completeness": round(comm.completeness, 1),
             "redundancy": round(comm.redundancy, 1),
@@ -489,7 +489,7 @@ def main():
     log("ELDER INVESTIGATIONS: COMPLETE")
     log("=" * 70)
     log(f"")
-    log(f"  Communities investigated:  {len(all_reports)}")
+    log(f"  Bins investigated:  {len(all_reports)}")
     log(f"  Redundant markers analyzed: {total_redundant}")
     log(f"")
     log(f"  Verdicts:")
