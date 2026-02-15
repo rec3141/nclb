@@ -121,6 +121,7 @@ def serialize_community(comm, harmony_report: dict) -> dict:
         "min_valence": round(harmony_report["min_valence"], 4),
         "collective_harmony": round(harmony_report["collective_harmony"], 4),
         "n_uneasy": harmony_report["n_uneasy"],
+        "marker_gene_inventory": comm.marker_gene_inventory,
         "missing_markers": comm.missing_markers,
     }
 
@@ -260,6 +261,10 @@ def main():
             prokka_gff_path = gffs[-1]  # use most recent
             log(f"[INFO] Found Prokka GFF: {prokka_gff_path}")
 
+    # SCG files from DAS Tool
+    bacteria_scg = binning_dir / "dastool" / "bacteria.scg"
+    archaea_scg = binning_dir / "dastool" / "archaea.scg"
+
     # Auto-discover binners
     binner_paths = find_binner_paths(binning_dir)
     if not binner_paths:
@@ -287,6 +292,8 @@ def main():
         macsyfinder_path=msf_path,
         defensefinder_path=df_path,
         prokka_gff_path=prokka_gff_path,
+        bacteria_scg_path=bacteria_scg if bacteria_scg.exists() else None,
+        archaea_scg_path=archaea_scg if archaea_scg.exists() else None,
     )
     log(f"[INFO] {len(identities):,} contigs, {len(communities)} communities")
 
@@ -298,11 +305,28 @@ def main():
     # --- Seed communities from binner agreement ---
     log("[INFO] Seeding communities from binner agreement (3+ majority)...")
     new_comms, binner_assigned = seed_communities_from_binner_agreement(identities)
+
+    # Load full SCG set for marker gene inventory on seeded communities
+    from nclb.identity import load_scg_assignments as _load_scg
+    _, full_scg_set = _load_scg(
+        bacteria_scg if bacteria_scg.exists() else None,
+        archaea_scg if archaea_scg.exists() else None,
+    )
+
     if new_comms:
         # Update contig assignments
         for contig, comm_name in binner_assigned.items():
             identities[contig].community = comm_name
             identities[contig].membership_type = "core"
+        # Compute marker gene inventory for seeded communities
+        for comm in new_comms.values():
+            inventory = set()
+            for m in comm.members:
+                mid = identities.get(m)
+                if mid:
+                    inventory.update(mid.marker_genes)
+            comm.marker_gene_inventory = sorted(inventory)
+            comm.missing_markers = sorted(full_scg_set - inventory) if full_scg_set else []
         # Merge into communities
         communities.update(new_comms)
         log(f"[INFO] Seeded {len(new_comms)} new communities from binner agreement "
