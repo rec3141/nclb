@@ -154,7 +154,7 @@ class ContigToolkit:
         d["domain_confidence"] = c.domain_confidence
         d["organellar_subtype"] = c.organellar_subtype
         # Annotation summary
-        d["n_cds"] = len(self.annotations.get(c.name, []))
+        d["n_cds"] = c.n_cds
         return d
 
     def get_graph_neighbors(self, contig_name: str) -> dict:

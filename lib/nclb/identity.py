@@ -38,6 +38,7 @@ class ContigIdentity:
 
     # Gene names from annotation (Prokka/Bakta)
     gene_names: list[str] = field(default_factory=list)
+    n_cds: int = 0              # total CDS features (from best annotation source)
     coding_density: float = 0.0
     marker_genes: list[str] = field(default_factory=list)
 
@@ -509,6 +510,7 @@ def load_prokka_genes(
     Coding density = sum(CDS bp) / contig_length.
     """
     contig_cds_bp: dict[str, int] = {}
+    contig_cds_count: dict[str, int] = {}
     contig_genes: dict[str, set[str]] = {}
 
     with open(gff_path) as f:
@@ -526,6 +528,7 @@ def load_prokka_genes(
             cds_len = end - start + 1
 
             contig_cds_bp[contig] = contig_cds_bp.get(contig, 0) + cds_len
+            contig_cds_count[contig] = contig_cds_count.get(contig, 0) + 1
 
             attrs = parts[8]
             # Extract gene= attribute value (named genes only)
@@ -546,6 +549,7 @@ def load_prokka_genes(
         genes = sorted(contig_genes.get(contig, set()))
         result[contig] = {
             "genes": genes,
+            "n_cds": contig_cds_count.get(contig, 0),
             "coding_density": coding_density,
         }
     return result
@@ -1001,7 +1005,7 @@ def _bakta_gene_summary(
 ) -> dict[str, dict]:
     """Extract per-contig gene names and coding density from Bakta annotations.
 
-    Returns {contig: {"genes": [named_genes], "coding_density": float}}.
+    Returns {contig: {"genes": [named_genes], "n_cds": int, "coding_density": float}}.
     """
     result: dict[str, dict] = {}
     for contig, features in annotations.items():
@@ -1017,6 +1021,7 @@ def _bakta_gene_summary(
         coding_density = cds_bp / length if length > 0 else 0.0
         result[contig] = {
             "genes": sorted(genes),
+            "n_cds": len(features),
             "coding_density": coding_density,
         }
     return result
@@ -1207,17 +1212,20 @@ def build_identities(
         if scgs:
             identity.marker_genes = scgs
 
-        # Annotate with Prokka gene names and coding density
+        # Annotate with Prokka gene names, CDS count, and coding density
         prokka = prokka_data.get(name)
         if prokka:
             identity.gene_names = prokka["genes"]
+            identity.n_cds = prokka["n_cds"]
             identity.coding_density = prokka["coding_density"]
 
-        # Override with Bakta gene names when available (richer annotation)
+        # Override with Bakta when it has richer data
         bakta_genes = bakta_gene_data.get(name)
         if bakta_genes:
             if bakta_genes["genes"]:
                 identity.gene_names = bakta_genes["genes"]
+            if bakta_genes["n_cds"] > identity.n_cds:
+                identity.n_cds = bakta_genes["n_cds"]
             if bakta_genes["coding_density"] > 0:
                 identity.coding_density = bakta_genes["coding_density"]
 

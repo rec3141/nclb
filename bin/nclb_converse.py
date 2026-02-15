@@ -166,11 +166,13 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
     if tool_name == "compare_to_bin":
         cov = result.get('cov_pearson_r')
         graph = result.get('graph_neighbor_fraction')
+        cov_s = f"{cov:.3f}" if cov is not None else "N/A"
+        graph_s = f"{graph:.3f}" if graph is not None else "N/A"
         return (
             f"fit_score={result.get('fit_score', 0):+.3f}, "
             f"tnf_cosine={result.get('tnf_cosine_similarity', 0):.3f}, "
-            f"cov_pearson_r={cov:.3f if cov is not None else 'N/A'}, "
-            f"graph_neighbor_frac={graph:.3f if graph is not None else 'N/A'}, "
+            f"cov_pearson_r={cov_s}, "
+            f"graph_neighbor_frac={graph_s}, "
             f"GC_delta={result.get('gc_delta', 0):.4f}"
         )
 
