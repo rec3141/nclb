@@ -1367,7 +1367,7 @@ def seed_communities_from_binner_agreement(
                 if total_size < min_total_size:
                     continue
 
-                comm_name = f"binner-agree-{k}of{n_binners}_{comm_counter}"
+                comm_name = f"seed_bin_{comm_counter}"
                 community_members[comm_name] = new_members
                 community_agreement[comm_name] = k
                 comm_counter += 1
@@ -1403,7 +1403,7 @@ def seed_communities_from_binner_agreement(
 
         profile = CommunityProfile(
             name=comm_name,
-            source_binner=f"binner-agreement-{agreement}of{n_binners}",
+            source_binner=f"seed-{agreement}of{n_binners}",
             members=members,
             tnf_centroid=tnf_centroid,
             mean_coverage=mean_coverage,

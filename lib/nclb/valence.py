@@ -29,8 +29,12 @@ def contig_fit_score(
     """Compute how well a contig fits in a community.
 
     Returns a continuous score in [-1, +1].
+
+    When a signal has insufficient data (e.g. no coverage variation, no graph
+    edges), its weight is redistributed proportionally to the available signals
+    so the score isn't penalized for missing information.
     """
-    w = weights or {
+    base_weights = weights or {
         "tnf": 0.30,        # composition is fundamental
         "coverage": 0.25,   # abundance pattern is strong signal
         "graph": 0.15,      # graph links are physical evidence
@@ -38,65 +42,82 @@ def contig_fit_score(
         "contribution": 0.15,  # filling gaps is valued
     }
 
+    # --- Compute each signal, tracking which have real data ---
+    signals = {}  # name → value (0-1)
+    available = {}  # name → True if signal has data
+
     # TNF similarity: cosine similarity of contig TNF to community centroid
     tnf_sim = 0.0
-    if community.tnf_centroid is not None and contig.tnf is not None:
+    has_tnf = community.tnf_centroid is not None and contig.tnf is not None
+    if has_tnf:
         cos_dist = cosine_distance(contig.tnf, community.tnf_centroid)
-        tnf_sim = 1.0 - cos_dist  # cosine similarity
+        tnf_sim = 1.0 - cos_dist
+    signals["tnf"] = tnf_sim
+    available["tnf"] = has_tnf
 
     # Coverage correlation: Pearson correlation of coverage profiles
     cov_corr = 0.0
+    has_cov = False
     if community.mean_coverage is not None and contig.coverage is not None:
         if len(contig.coverage) > 1 and np.std(contig.coverage) > 0 and np.std(community.mean_coverage) > 0:
             r, _ = pearsonr(contig.coverage, community.mean_coverage)
-            cov_corr = max(0.0, r)  # clamp negative correlations to 0
+            cov_corr = max(0.0, r)
+            has_cov = True
         elif len(contig.coverage) == 1:
-            # Single sample — use ratio similarity instead
             if community.mean_coverage[0] > 0:
                 ratio = contig.coverage[0] / community.mean_coverage[0]
                 cov_corr = 1.0 - min(abs(np.log2(max(ratio, 0.01))), 3.0) / 3.0
                 cov_corr = max(0.0, cov_corr)
+                has_cov = True
+    signals["coverage"] = cov_corr
+    available["coverage"] = has_cov
 
     # Graph fraction: fraction of contig's graph neighbors in this community
     graph_frac = 0.0
-    if adjacency is not None and contig.connections:
+    has_graph = adjacency is not None and len(contig.connections) > 0
+    if has_graph:
         member_set = set(community.members)
         n_in_community = sum(1 for n in contig.connections if n in member_set)
         graph_frac = n_in_community / len(contig.connections)
+    signals["graph"] = graph_frac
+    available["graph"] = has_graph
 
     # Recognition: fraction of binners that agree with this community
     recognition = 0.0
-    if contig.binner_assignments:
-        # For each binner, check if it placed this contig in the same bin
-        # that was the source of this community
+    has_recog = bool(contig.binner_assignments)
+    if has_recog:
         n_agree = 0
         for binner, assignment in contig.binner_assignments.items():
             if assignment is not None:
-                # Check if this binner's assignment matches the community's source
-                # community name format: dastool-{binner}_{number}
                 if community.source_binner in assignment.lower():
-                    # Same binner — check if it's the same bin number
                     if assignment in community.name:
                         n_agree += 1
                 elif assignment is not None:
-                    # Different binner — count as partial agreement if any assignment
                     n_agree += 0.2
-        recognition = min(n_agree / 5.0, 1.0)
+        total_binners = max(len(contig.binner_assignments), 1)
+        recognition = min(n_agree / total_binners, 1.0)
+    signals["recognition"] = recognition
+    available["recognition"] = has_recog
 
     # Contribution: does contig carry genes the community is missing?
     contribution = 0.0
-    if contig.marker_genes and community.missing_markers:
+    has_contrib = bool(contig.marker_genes and community.missing_markers)
+    if has_contrib:
         overlap = set(contig.marker_genes) & set(community.missing_markers)
         contribution = len(overlap) / len(community.missing_markers)
+    signals["contribution"] = contribution
+    available["contribution"] = has_contrib
 
-    # Weighted combination
-    raw_score = (
-        w["tnf"] * tnf_sim
-        + w["coverage"] * cov_corr
-        + w["graph"] * graph_frac
-        + w["recognition"] * recognition
-        + w["contribution"] * contribution
-    )
+    # --- Redistribute unavailable weights proportionally ---
+    active_weight = sum(base_weights[k] for k in base_weights if available.get(k))
+    if active_weight <= 0:
+        return -1.0  # no signals at all
+
+    raw_score = 0.0
+    for name in base_weights:
+        if available.get(name):
+            w = base_weights[name] / active_weight  # normalized weight
+            raw_score += w * signals[name]
 
     # Rescale to [-1, +1]
     return 2.0 * raw_score - 1.0

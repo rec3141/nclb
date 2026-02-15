@@ -40,45 +40,40 @@ from nclb.valence import contig_fit_score, tnf_coherence, coverage_coherence
 
 ROUND1_SYSTEM = """You examine metagenome-assembled genome bins for quality issues.
 
-Each consensus bin (named like "Fierce Arrow") contains contigs placed together by
-DAS Tool consensus across 5 binning algorithms. You examine each bin's coherence
-and identify contigs that don't belong.
+Each consensus bin contains contigs placed together by DAS Tool consensus across multiple
+binning algorithms. You receive ALL members with their pre-computed fit scores. Use your
+judgment to decide which contigs to investigate and whether any should be released.
 
-IMPORTANT — two kinds of bins exist:
-- CONSENSUS BINS (e.g. "Fierce Arrow"): the bins you are evaluating. These are the
-  final placements from DAS Tool consensus across all 5 binners.
+Two kinds of bins exist:
+- CONSENSUS BINS (e.g. "Fierce Arrow"): the bins you are evaluating.
 - PER-BINNER BIN IDs (e.g. "semibin_022", "metabat_014"): raw bin IDs from individual
-  binning tools. These are NOT consensus bins. Each binner groups contigs independently,
-  so semibin_022 and metabat_014 may contain completely different sets of contigs.
+  binning tools. These are NOT consensus bins. Each binner groups contigs independently.
 
-IMPORTANT — understanding n_binners:
-- n_binners counts how many of the 5 individual binning tools assigned this contig to
-  SOME bin — it does NOT mean they assigned it to THIS consensus bin or with these contigs.
-- n_binners >= 3 means the contig has strong genomic signal (multiple tools recognized it
-  as part of a genome). This is evidence the contig BELONGS somewhere, not a reason to
-  release it. To evaluate fit with THIS specific bin, use compare_to_bin() instead.
+Understanding the data:
+- Fit scores are pre-computed from TNF composition, coverage correlation, graph links,
+  binner recognition, and marker gene contribution. Scores range from -1 to +1.
+- When a signal has insufficient data (e.g. no coverage variation, no graph edges),
+  its weight is redistributed to available signals. A null cov_pearson_r or
+  graph_neighbor_fraction in compare_to_bin means that signal was unavailable, not zero.
+- n_binners (shown as X/N) counts how many of the N tools assigned this contig to SOME bin — not to
+  THIS bin. Use compare_to_bin() to evaluate fit with a specific consensus bin.
+- has_graph_data=false means get_graph_neighbors/find_graph_connections won't have data.
 
 Available tools:
-- get_contig_info(contig): size, GC%, coverage, taxonomy, domain, gene names, marker_genes, n_cds, MGE status, defense systems, n_binners (how many tools binned it anywhere)
-- get_graph_neighbors(contig): assembly graph neighbors with their consensus bin assignments
-- get_binner_assignments(contig): per-binner bin IDs (these are NOT consensus bin names)
-- compare_to_bin(contig, bin_name): fit score vs a consensus bin — TNF cosine, coverage Pearson r, graph neighbor fraction, GC comparison
-- get_bin_info(bin_name): consensus bin profile — members, size, completeness, coherence, quality tier
-- get_missing_markers(bin_name): marker genes the bin still needs for completeness
-- predict_join_impact(contig, bin_name): predicted size/GC shift if contig joins this bin
-- find_graph_connections(contig): which consensus bins this contig connects to via assembly graph
-- read_annotations(contig, page=1): paginated CDS annotation table (20 features per page)
+- get_contig_info(contig): size, GC%, coverage, taxonomy, domain, gene names, marker_genes, n_cds, MGE status, n_binners
+- get_graph_neighbors(contig): assembly graph neighbors with their bin assignments
+- get_binner_assignments(contig): per-binner bin IDs (NOT consensus bin names)
+- compare_to_bin(contig, bin_name): fit score breakdown — TNF cosine, coverage correlation, graph fraction, GC delta
+- get_bin_info(bin_name): bin profile — members, size, completeness, coherence, quality tier
+- get_missing_markers(bin_name): marker genes the bin still needs
+- predict_join_impact(contig, bin_name): predicted impact if contig joins this bin
+- find_graph_connections(contig): which bins this contig connects to via assembly graph
+- read_annotations(contig, page=1): paginated CDS annotation table (20 per page)
 
 Actions you can recommend:
-- RELEASE a contig: remove it from this bin (it becomes unbinned). Only release
-  contigs with STRONG EVIDENCE of misplacement: different taxonomy/domain, wildly different
-  GC or coverage pattern, AND low fit score from compare_to_bin(). Do NOT use n_binners
-  as evidence against a contig — it measures general binnability, not fit to THIS bin.
-- SPLIT the bin: if you find the bin contains two or more distinct groups
-  (different phyla, divergent coverage patterns, bimodal GC), recommend splitting it.
-  List which contigs belong to each proposed sub-group.
-
-Investigate thoroughly, weigh the evidence, and make your best judgment.
+- RELEASE: remove a contig from this bin (becomes unbinned). Release when evidence
+  shows misplacement: different taxonomy/domain, divergent GC or coverage, low fit score.
+- SPLIT: if the bin contains two or more distinct genomic groups, recommend splitting.
 
 After investigating, respond with JSON (no commentary):
 {"bin": "name", "assessment": "narrative", "release": [{"contig": "name", "reason": "evidence"}], "split": [{"name": "descriptive label", "members": ["contig1", "contig2"]}], "concerns": []}"""
@@ -169,11 +164,13 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         return f"n_binners={result.get('n_binners', 0)}, {', '.join(assigned) or 'none'}"
 
     if tool_name == "compare_to_bin":
+        cov = result.get('cov_pearson_r')
+        graph = result.get('graph_neighbor_fraction')
         return (
             f"fit_score={result.get('fit_score', 0):+.3f}, "
             f"tnf_cosine={result.get('tnf_cosine_similarity', 0):.3f}, "
-            f"cov_pearson_r={result.get('cov_pearson_r', 0):.3f}, "
-            f"graph_neighbor_frac={result.get('graph_neighbor_fraction', 0):.3f}, "
+            f"cov_pearson_r={cov:.3f if cov is not None else 'N/A'}, "
+            f"graph_neighbor_frac={graph:.3f if graph is not None else 'N/A'}, "
             f"GC_delta={result.get('gc_delta', 0):.4f}"
         )
 
@@ -439,29 +436,39 @@ def run_tool_conversation(
 # Round builders (brief prompts — tools provide the data)
 # ---------------------------------------------------------------------------
 
-def round1_prompt(comm_name: str, comm_data: dict, uneasy_names: list[str],
+def round1_prompt(comm_name: str, comm_data: dict,
+                  member_scores: list[tuple[str, float]],
                   display_name: str | None = None) -> str:
     """Brief prompt for Round 1 — the LLM investigates via tools."""
-    uneasy_section = "None — all members have positive fit score."
-    if uneasy_names:
-        uneasy_section = ", ".join(uneasy_names)
-
     shown_name = display_name or comm_name
     quality = comm_data.get('quality_tier', 'none')
+
+    # Show all members sorted by fit score (worst first)
+    score_lines = []
+    for name, score in sorted(member_scores, key=lambda x: (x[1] is None, x[1] or 0)):
+        s = f"{score:+.3f}" if score is not None else "N/A"
+        score_lines.append(f"  {name}: {s}")
+    members_section = "\n".join(score_lines)
+
+    mean_fit = comm_data.get('mean_fit') or 0.0
+    min_fit = comm_data.get('min_fit') or 0.0
+    completeness = comm_data.get('completeness') or 0.0
+    redundancy = comm_data.get('redundancy') or 0.0
+
     return f"""Examine bin "{shown_name}".
 
 Quick overview:
   Quality tier: {quality}
   Members: {len(comm_data.get('members', []))}
-  Size: {comm_data['total_size']:,} bp
-  Wholeness: {comm_data['completeness']:.1f}% | Redundancy: {comm_data['redundancy']:.1f}%
-  Mean fit: {comm_data['mean_fit']:+.3f} | Min fit: {comm_data['min_fit']:+.3f}
+  Size: {comm_data.get('total_size', 0):,} bp
+  Wholeness: {completeness:.1f}% | Redundancy: {redundancy:.1f}%
+  Mean fit: {mean_fit:+.3f} | Min fit: {min_fit:+.3f}
 
-Low-fit members (negative fit score): {uneasy_section}
+Members (sorted by fit score):
+{members_section}
 
-Investigate each low-fit member using get_contig_info() and compare_to_bin().
-Check their coverage, graph connections, and binner assignments.
-Then decide which should be released."""
+Use tools to investigate any members you find suspicious.
+Decide which contigs truly belong and which should be released."""
 
 
 def round2_prompt(
@@ -816,9 +823,11 @@ def main():
     log("ROUND 1: COMMUNITY HEALTH CHECK")
     log("=" * 70)
 
+    # Note: fit scores already computed at startup (line ~737) with current formula
+
     # Build community data dicts for prompts
     comm_data_map = {}
-    uneasy_map = {}
+    member_scores_map = {}
     for comm_name, comm in communities.items():
         harmony_report = community_metrics(comm, identities, adjacency)
         comm_data_map[comm_name] = {
@@ -834,27 +843,19 @@ def main():
             "mean_fit": harmony_report["mean_fit"],
             "min_fit": harmony_report["min_fit"],
         }
-        # Find uneasy members
-        uneasy_names = []
+        # Build {contig, score} pairs for all members
+        scores = []
         for m in comm.members:
             c = identities.get(m)
-            if c and c.fit_score < 0:
-                uneasy_names.append(m)
-        uneasy_map[comm_name] = uneasy_names
+            if c:
+                scores.append((m, c.fit_score))
+        member_scores_map[comm_name] = scores
 
     for comm_name in sorted(communities.keys()):
-        uneasy = uneasy_map[comm_name]
+        member_scores = member_scores_map[comm_name]
         comm_data = comm_data_map[comm_name]
 
-        if not uneasy:
-            log(f"  {comm_name}: 0 uneasy, skipping")
-            all_proposals.append({
-                "round": 1, "bin": comm_name,
-                "result": {"bin": comm_name, "assessment": "All members content", "release": []},
-            })
-            continue
-
-        prompt = round1_prompt(comm_name, comm_data, uneasy,
+        prompt = round1_prompt(comm_name, comm_data, member_scores,
                                display_name=community_names.get(comm_name))
         try:
             result = run_tool_conversation(

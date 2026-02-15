@@ -65,6 +65,13 @@ class ContigToolkit:
         self.adjacency = adjacency
         self.resonance_map = resonance_map
         self.annotations = annotations or {}
+        self._cache: dict[tuple, dict] = {}
+        # Detect total number of binners from data
+        self.total_binners = 0
+        for c in identities.values():
+            if c.binner_assignments:
+                self.total_binners = len(c.binner_assignments)
+                break
         # community_names: internal_name → festive display name
         self._to_display = community_names or {}
         self._from_display = {v: k for k, v in self._to_display.items()}
@@ -99,10 +106,10 @@ class ContigToolkit:
                 "mean_nonzero": round(float(np.mean([x for x in c.coverage if x > 0])), 4) if any(x > 0 for x in c.coverage) else 0.0,
                 "max": round(float(max(c.coverage)), 4),
             },
-            "graph_neighbors": c.connections,
+            "has_graph_data": len(c.connections) > 0,
             "n_graph_neighbors": len(c.connections),
             "binner_assignments": c.binner_assignments,
-            "n_binners": c.n_binners,
+            "n_binners": f"{c.n_binners}/{self.total_binners}",
             "bin": self._display(c.community),
             "membership_type": c.membership_type,
             "ancestry": c.ancestry,
@@ -175,7 +182,7 @@ class ContigToolkit:
         return {
             "contig": contig_name,
             "binner_assignments": c.binner_assignments,
-            "n_binners": c.n_binners,
+            "n_binners": f"{c.n_binners}/{self.total_binners}",
             "consensus": self._display(c.community),
         }
 
@@ -199,38 +206,49 @@ class ContigToolkit:
         if comm.tnf_centroid is not None and c.tnf is not None:
             tnf_cos = 1.0 - cosine_distance(c.tnf, comm.tnf_centroid)
 
-        cov_r = 0.0
+        # Coverage correlation — None when insufficient data
+        cov_r = None
         if comm.mean_coverage is not None and c.coverage is not None:
             if len(c.coverage) > 1 and np.std(c.coverage) > 0 and np.std(comm.mean_coverage) > 0:
                 r, _ = pearsonr(c.coverage, comm.mean_coverage)
                 cov_r = max(0.0, r)
+            elif len(c.coverage) == 1 and comm.mean_coverage[0] > 0:
+                ratio = c.coverage[0] / comm.mean_coverage[0]
+                cov_r = 1.0 - min(abs(np.log2(max(ratio, 0.01))), 3.0) / 3.0
+                cov_r = max(0.0, cov_r)
 
         member_set = set(comm.members)
         neighbors_in = [n for n in c.connections if n in member_set]
-        neighbor_frac = len(neighbors_in) / len(c.connections) if c.connections else 0.0
+        has_graph = len(c.connections) > 0
+        neighbor_frac = len(neighbors_in) / len(c.connections) if has_graph else None
 
-        return {
+        # Track which signals contributed to fit_score
+        available_signals = ["tnf"]
+        if cov_r is not None:
+            available_signals.append("coverage")
+        if has_graph:
+            available_signals.append("graph")
+
+        result = {
             "contig": contig_name,
             "bin": self._display(bin_name),
             "fit_score": round(v, 4),
             "tnf_cosine_similarity": round(tnf_cos, 4),
-            "cov_pearson_r": round(cov_r, 4),
-            "graph_neighbor_fraction": round(neighbor_frac, 4),
-            "graph_neighbors_in_community": neighbors_in,
-            "n_graph_neighbors_in": len(neighbors_in),
-            "contig_coverage": [round(float(x), 6) for x in c.coverage],
-            "bin_mean_coverage": [round(float(x), 6) for x in comm.mean_coverage] if comm.mean_coverage is not None else [],
-            "coverage_pattern_match": (
-                f"both detected in same {sum(1 for a, b in zip(c.coverage, comm.mean_coverage) if a > 0 and b > 0)} samples"
-                if comm.mean_coverage is not None and sum(1 for a, b in zip(c.coverage, comm.mean_coverage) if (a > 0) == (b > 0)) == len(c.coverage)
-                else "different detection patterns"
-            ) if comm.mean_coverage is not None else "no bin coverage data",
+            "cov_pearson_r": round(cov_r, 4) if cov_r is not None else None,
+            "graph_neighbor_fraction": round(neighbor_frac, 4) if neighbor_frac is not None else None,
             "contig_gc": round(c.gc, 4),
             "bin_mean_gc": round(comm.mean_gc, 4),
             "gc_delta": round(abs(c.gc - comm.mean_gc), 4),
             "bin_completeness": round(comm.completeness, 2),
             "bin_quality_tier": comm.quality_tier,
+            "signals_used": available_signals,
         }
+        if has_graph:
+            result["graph_neighbors_in_bin"] = neighbors_in
+        if cov_r is not None:
+            result["contig_coverage"] = [round(float(x), 6) for x in c.coverage]
+            result["bin_mean_coverage"] = [round(float(x), 6) for x in comm.mean_coverage] if comm.mean_coverage is not None else []
+        return result
 
     def get_bin_info(self, bin_name: str) -> dict:
         """Full bin profile."""
@@ -247,6 +265,7 @@ class ContigToolkit:
             "mean_gc": round(comm.mean_gc, 4),
             "gc_stdev": round(comm.gc_stdev, 4),
             "completeness": round(comm.completeness, 2),
+            "completeness_note": "below detection threshold" if comm.completeness == 0 and comm.total_size < 500000 else None,
             "redundancy": round(comm.redundancy, 2),
             "quality_tier": comm.quality_tier,
             "tnf_coherence": round(comm.tnf_coherence, 4),
@@ -361,8 +380,12 @@ class ContigToolkit:
             "features": features[start:start + page_size],
         }
 
+    def clear_cache(self):
+        """Clear the tool result cache (call between conversations)."""
+        self._cache.clear()
+
     def dispatch(self, tool_name: str, arguments: dict) -> dict:
-        """Dispatch a tool call from the LLM."""
+        """Dispatch a tool call from the LLM, with per-conversation caching."""
         dispatch_map = {
             "get_contig_info": self.get_contig_info,
             "get_graph_neighbors": self.get_graph_neighbors,
@@ -380,7 +403,14 @@ class ContigToolkit:
         if fn is None:
             return {"error": f"Unknown tool: {tool_name}"}
 
-        return fn(**arguments)
+        # Cache key: (tool_name, sorted argument pairs)
+        cache_key = (tool_name, tuple(sorted(arguments.items())))
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        result = fn(**arguments)
+        self._cache[cache_key] = result
+        return result
 
 
 # ---------------------------------------------------------------------------
