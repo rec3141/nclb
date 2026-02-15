@@ -42,6 +42,23 @@ ROUND1_SYSTEM = """You are the voice of metagenome-assembled genome communities.
 You have tools to investigate any contig or community. Use them to understand
 why members are uneasy before deciding whether to release them.
 
+Key tools and what they reveal:
+- who_am_i(contig): Full identity — composition, coverage, ancestry (taxonomy),
+  gifts (named genes), marker_genes (SCGs), MGE status (virus/plasmid/provirus),
+  defense systems (CRISPR, R-M, BREX), secretion systems, integrons, genomic islands
+- what_did_the_oracles_say(contig): All 5 binner assignments and consensus
+- how_do_i_resonate_with(contig, community): Valence breakdown with raw signals
+- what_is_this_community(community): Profile with missing SCG markers
+- what_gifts_are_missing(community): Specific SCGs the community still needs
+- what_would_change_if_i_joined(contig, community): Impact prediction with contributed SCGs
+
+Biological reasoning matters:
+- Proviruses and mobile elements often have divergent composition — that's expected, not contamination
+- Defense systems (CRISPR, restriction-modification) are hallmarks of bacterial chromosomes
+- Contigs with integrons or genomic islands may be accessory genome, not contamination
+- Taxonomy (ancestry) mismatches are stronger evidence of misplacement than composition alone
+- SCG marker genes help assess whether a contig genuinely belongs to this genome
+
 Investigate thoroughly, weigh the evidence, and make your best judgment.
 
 After investigating, respond with JSON (no commentary):
@@ -52,8 +69,21 @@ ROUND2_SYSTEM = """You speak for unhoused contigs seeking community.
 You have tools to investigate each contig's identity, graph connections,
 and resonance with candidate communities. Call them to build evidence.
 
+Key tools:
+- who_am_i(contig): Full identity including taxonomy, gifts, marker genes, MGE status,
+  defense/secretion systems, integrons, genomic islands
+- what_did_the_oracles_say(contig): All 5 binner (oracle) assignments
+- find_graph_connections(contig): Which communities this contig is linked to
+- how_do_i_resonate_with(contig, community): Valence with composition/coverage/graph signals
+- what_would_change_if_i_joined(contig, community): Size, GC shift, contributed SCG markers
+- what_gifts_are_missing(community): SCGs the community still needs
+
 These contigs were recognized by binning algorithms but not placed in the
-consensus. Investigate each and find where they belong.
+consensus. Investigate each and find where they belong. Consider:
+- Taxonomy: does the contig's ancestry match the community?
+- Composition: harmony (TNF cosine) and rhythm (coverage correlation)
+- Contribution: does it carry SCG markers the community is missing?
+- Biology: MGEs, defense systems, and accessory elements may explain divergence
 
 After investigating, respond with JSON (no commentary):
 {"decisions": [{"contig": "name", "action": "join|wait|wander", "community": "name_or_null", "evidence": "specific signals", "valence": 0.0}]}"""
@@ -70,6 +100,82 @@ Respond with JSON (no commentary):
 # ---------------------------------------------------------------------------
 # Tool-use conversation loop
 # ---------------------------------------------------------------------------
+
+def _summarize_tool_result(tool_name: str, result: dict) -> str:
+    """Produce a short human-readable summary of a tool result for logging."""
+    if "error" in result:
+        return f"ERROR: {result['error']}"
+
+    if tool_name == "who_am_i":
+        parts = [f"{result.get('size', 0):,}bp"]
+        if result.get("ancestry"):
+            # Show last two ranks of lineage
+            lineage = result["ancestry"].split(";")
+            parts.append(lineage[-1].strip() if lineage else "?")
+        if result.get("mge_type"):
+            parts.append(result["mge_type"])
+        if result.get("gifts"):
+            parts.append(f"{len(result['gifts'])} gifts")
+        if result.get("marker_genes"):
+            parts.append(f"{len(result['marker_genes'])} SCGs")
+        if result.get("has_defense_system"):
+            n = len(result.get("defense_systems", []))
+            parts.append(f"{n} defense")
+        if result.get("has_integron"):
+            parts.append("integron")
+        if result.get("has_secretion_system"):
+            parts.append("secretion")
+        parts.append(f"voice={result.get('voice_strength', 0)}")
+        return ", ".join(parts)
+
+    if tool_name == "what_did_the_oracles_say":
+        testimony = result.get("testimony", {})
+        assigned = [f"{k}={v}" for k, v in testimony.items() if v]
+        return f"voice={result.get('voice_strength', 0)}, {', '.join(assigned) or 'none'}"
+
+    if tool_name == "how_do_i_resonate_with":
+        return (
+            f"valence={result.get('valence', 0):+.3f}, "
+            f"harmony={result.get('harmony_tnf_cosine', 0):.3f}, "
+            f"rhythm={result.get('rhythm_coverage_correlation', 0):.3f}, "
+            f"kinship={result.get('kinship_fraction', 0):.3f}, "
+            f"GC_delta={result.get('gc_delta', 0):.4f}"
+        )
+
+    if tool_name == "what_is_this_community":
+        return (
+            f"{result.get('n_members', 0)} members, "
+            f"{result.get('total_size', 0):,}bp, "
+            f"{result.get('completeness', 0):.0f}% complete, "
+            f"{result.get('elder_rank', '?')}, "
+            f"{len(result.get('missing_markers', []))} missing SCGs"
+        )
+
+    if tool_name == "what_gifts_are_missing":
+        return f"{result.get('n_missing', 0)} missing markers"
+
+    if tool_name == "what_would_change_if_i_joined":
+        return (
+            f"+{result.get('size_delta', 0):,}bp, "
+            f"GC_shift={result.get('gc_shift', 0):.4f}, "
+            f"{result.get('n_contributed', 0)} contributed SCGs"
+        )
+
+    if tool_name == "find_graph_connections":
+        conns = result.get("community_connections", [])
+        if conns:
+            top = ", ".join(f"{c['community']}({c['n_edges']})" for c in conns[:3])
+            return f"{len(conns)} communities: {top}"
+        return "no graph connections"
+
+    if tool_name == "who_are_my_neighbors":
+        neighbors = result.get("neighbors", [])
+        housed = sum(1 for n in neighbors if n.get("community"))
+        return f"{len(neighbors)} neighbors ({housed} housed)"
+
+    # Fallback
+    return json.dumps(result, default=str)[:120]
+
 
 def run_tool_conversation(
     client,
@@ -162,6 +268,14 @@ def run_tool_conversation(
                 ],
             })
 
+            # Log any reasoning text the LLM produced alongside tool calls
+            if msg.content and log_fn:
+                # Truncate long reasoning to keep logs manageable
+                reasoning = msg.content.strip()
+                if len(reasoning) > 200:
+                    reasoning = reasoning[:200] + "..."
+                log_fn(f"    [REASONING] {reasoning}")
+
             # Execute each tool call
             for tc in msg.tool_calls:
                 tool_calls_total += 1
@@ -171,14 +285,20 @@ def run_tool_conversation(
                 except Exception as e:
                     result = {"error": f"Tool execution failed: {e}"}
 
+                # Verbose tool logging
+                if log_fn:
+                    args_short = json.dumps(args, default=str)
+                    if len(args_short) > 100:
+                        args_short = args_short[:100] + "..."
+                    # Summarize result
+                    result_summary = _summarize_tool_result(tc.function.name, result)
+                    log_fn(f"    [{tool_calls_total}] {tc.function.name}({args_short}) → {result_summary}")
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "content": json.dumps(result, default=str),
                 })
-
-            if log_fn and tool_calls_total % 5 == 0:
-                log_fn(f"    ({tool_calls_total} tool calls so far)")
             continue
 
         # No tool calls — this is the final response
