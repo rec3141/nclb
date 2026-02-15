@@ -709,9 +709,20 @@ def main():
     gfa_adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
 
     # Load read-bridged adjacency from BAMs (supplementary alignments)
+    # Cache to JSON to avoid re-scanning 1.8GB of BAMs every startup (~30s)
     bam_files = sorted(mapping_dir.glob("*.sorted.bam"))
+    read_adj_cache = mapping_dir / "read_adjacency.json"
+    read_adj: dict[str, list[str]] = {}
     if bam_files:
-        read_adj = load_read_adjacency(bam_files)
+        if read_adj_cache.exists():
+            with open(read_adj_cache) as f:
+                read_adj = json.load(f)
+            log(f"[INFO] Loaded cached read adjacency ({len(read_adj)} contigs)")
+        else:
+            read_adj = load_read_adjacency(bam_files)
+            with open(read_adj_cache, "w") as f:
+                json.dump(read_adj, f)
+            log(f"[INFO] Built read adjacency from BAMs ({len(read_adj)} contigs), cached")
         adjacency = merge_adjacencies(gfa_adjacency, read_adj)
         log(f"[INFO] Adjacency: GFA={len(gfa_adjacency)} contigs, "
             f"read-bridged={len(read_adj)} contigs, "
@@ -748,14 +759,17 @@ def main():
         if c.community and c.community in communities:
             c.fit_score = cv(c, communities[c.community], adjacency)
 
-    # Compute community coherence metrics
+    # Coherence metrics are computed lazily per-bin (JIT) to avoid 3+ min startup
     from nclb.valence import community_metrics
     from nclb.graph import graph_connectivity
-    for comm in communities.values():
-        members = [identities[n] for n in comm.members if n in identities]
-        comm.tnf_coherence = tnf_coherence(members)
-        comm.coverage_correlation = coverage_coherence(members)
-        comm.graph_connectivity = graph_connectivity(comm.members, adjacency)
+
+    def ensure_coherence(comm):
+        """Compute coherence metrics on first access."""
+        if comm.tnf_coherence == 0.0 and len(comm.members) > 1:
+            members = [identities[n] for n in comm.members if n in identities]
+            comm.tnf_coherence = tnf_coherence(members)
+            comm.coverage_correlation = coverage_coherence(members)
+            comm.graph_connectivity = graph_connectivity(comm.members, adjacency)
 
     # Load landscape data (UMAP coordinates) if available
     landscape_path = binning_dir / "nclb" / "landscape.json"
@@ -827,12 +841,23 @@ def main():
 
     # Note: fit scores already computed at startup (line ~737) with current formula
 
-    # Build community data dicts for prompts
-    comm_data_map = {}
-    member_scores_map = {}
-    for comm_name, comm in communities.items():
-        harmony_report = community_metrics(comm, identities, adjacency)
-        comm_data_map[comm_name] = {
+    for comm_name in sorted(communities.keys()):
+        comm = communities[comm_name]
+
+        # JIT: compute coherence and build data dict per-bin (avoids 3+ min startup)
+        ensure_coherence(comm)
+
+        # Use pre-computed fit scores instead of recomputing via community_metrics
+        member_scores = []
+        for m in comm.members:
+            c = identities.get(m)
+            if c:
+                member_scores.append((m, c.fit_score))
+        fit_values = [s for _, s in member_scores]
+        mean_fit = sum(fit_values) / len(fit_values) if fit_values else 0.0
+        min_fit = min(fit_values) if fit_values else 0.0
+
+        comm_data = {
             "name": comm_name,
             "quality_tier": comm.quality_tier,
             "members": comm.members,
@@ -842,20 +867,9 @@ def main():
             "tnf_coherence": comm.tnf_coherence,
             "coverage_correlation": comm.coverage_correlation,
             "graph_connectivity": comm.graph_connectivity,
-            "mean_fit": harmony_report["mean_fit"],
-            "min_fit": harmony_report["min_fit"],
+            "mean_fit": mean_fit,
+            "min_fit": min_fit,
         }
-        # Build {contig, score} pairs for all members
-        scores = []
-        for m in comm.members:
-            c = identities.get(m)
-            if c:
-                scores.append((m, c.fit_score))
-        member_scores_map[comm_name] = scores
-
-    for comm_name in sorted(communities.keys()):
-        member_scores = member_scores_map[comm_name]
-        comm_data = comm_data_map[comm_name]
 
         prompt = round1_prompt(comm_name, comm_data, member_scores,
                                display_name=community_names.get(comm_name))
