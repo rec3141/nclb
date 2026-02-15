@@ -76,7 +76,13 @@ class ContigToolkit:
             "is_circular": c.is_circular,
             "is_repeat": c.is_repeat,
             "multiplicity": c.multiplicity,
-            "coverage_per_sample": [round(float(x), 4) for x in c.coverage],
+            "coverage_per_sample": [round(float(x), 6) for x in c.coverage],
+            "coverage_summary": {
+                "n_samples": len(c.coverage),
+                "n_detected": sum(1 for x in c.coverage if x > 0),
+                "mean_nonzero": round(float(np.mean([x for x in c.coverage if x > 0])), 4) if any(x > 0 for x in c.coverage) else 0.0,
+                "max": round(float(max(c.coverage)), 4),
+            },
             "graph_neighbors": c.connections,
             "n_graph_neighbors": len(c.connections),
             "testimony": c.testimony,
@@ -203,8 +209,13 @@ class ContigToolkit:
             "kinship_fraction": round(kinship, 4),
             "graph_neighbors_in_community": neighbors_in,
             "n_graph_neighbors_in": len(neighbors_in),
-            "contig_coverage": [round(float(x), 4) for x in c.coverage],
-            "community_mean_coverage": [round(float(x), 4) for x in comm.mean_coverage] if comm.mean_coverage is not None else [],
+            "contig_coverage": [round(float(x), 6) for x in c.coverage],
+            "community_mean_coverage": [round(float(x), 6) for x in comm.mean_coverage] if comm.mean_coverage is not None else [],
+            "coverage_pattern_match": (
+                f"both detected in same {sum(1 for a, b in zip(c.coverage, comm.mean_coverage) if a > 0 and b > 0)} samples"
+                if comm.mean_coverage is not None and sum(1 for a, b in zip(c.coverage, comm.mean_coverage) if (a > 0) == (b > 0)) == len(c.coverage)
+                else "different detection patterns"
+            ) if comm.mean_coverage is not None else "no community coverage data",
             "contig_gc": round(c.gc, 4),
             "community_mean_gc": round(comm.mean_gc, 4),
             "gc_delta": round(abs(c.gc - comm.mean_gc), 4),
@@ -235,7 +246,7 @@ class ContigToolkit:
         }
         # Include mean coverage profile (actual data)
         if comm.mean_coverage is not None:
-            d["mean_coverage_per_sample"] = [round(float(x), 4) for x in comm.mean_coverage]
+            d["mean_coverage_per_sample"] = [round(float(x), 6) for x in comm.mean_coverage]
         return d
 
     def what_gifts_are_missing(self, community_name: str) -> dict:

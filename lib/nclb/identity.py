@@ -293,6 +293,97 @@ def load_gfa_graph(path: Path) -> tuple[dict[str, list[str]], dict[str, list[str
     return {k: sorted(v) for k, v in contig_adj.items()}
 
 
+def load_read_adjacency(
+    bam_paths: list[Path],
+    min_mapq: int = 5,
+    min_aln_len: int = 500,
+) -> dict[str, list[str]]:
+    """Build contig adjacency from cross-contig supplementary alignments in BAMs.
+
+    Reads with SA (supplementary alignment) tags indicate chimeric reads that
+    span multiple contigs. When the primary and supplementary map to different
+    contigs, those contigs are linked.
+
+    Args:
+        bam_paths: List of sorted, indexed BAM files.
+        min_mapq: Minimum mapping quality for primary alignment.
+        min_aln_len: Minimum aligned length (from CIGAR) for supplementary.
+
+    Returns:
+        Adjacency dict in same format as load_gfa_graph(): {contig: [neighbors]}.
+    """
+    try:
+        import pysam
+    except ImportError:
+        return {}
+
+    adjacency: dict[str, set[str]] = {}
+
+    for bam_path in bam_paths:
+        try:
+            bam = pysam.AlignmentFile(str(bam_path), "rb")
+        except Exception:
+            continue
+
+        for read in bam:
+            if read.mapping_quality < min_mapq:
+                continue
+            if not read.has_tag("SA"):
+                continue
+
+            primary_contig = read.reference_name
+            if primary_contig is None:
+                continue
+
+            sa_tag = read.get_tag("SA")  # "contig,pos,strand,cigar,mapq,nm;..."
+            for entry in sa_tag.split(";"):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                parts = entry.split(",")
+                if len(parts) < 5:
+                    continue
+                supp_contig = parts[0]
+                supp_mapq = int(parts[4])
+
+                if supp_contig == primary_contig:
+                    continue
+                if supp_mapq < min_mapq:
+                    continue
+
+                # Parse CIGAR to get aligned length
+                cigar_str = parts[3]
+                aln_len = _cigar_aligned_length(cigar_str)
+                if aln_len < min_aln_len:
+                    continue
+
+                adjacency.setdefault(primary_contig, set()).add(supp_contig)
+                adjacency.setdefault(supp_contig, set()).add(primary_contig)
+
+        bam.close()
+
+    return {k: sorted(v) for k, v in adjacency.items()}
+
+
+def _cigar_aligned_length(cigar: str) -> int:
+    """Sum of M/=/X operations in a CIGAR string → aligned reference length."""
+    import re as _re
+    total = 0
+    for length, op in _re.findall(r'(\d+)([MIDNSHP=X])', cigar):
+        if op in ('M', '=', 'X'):
+            total += int(length)
+    return total
+
+
+def merge_adjacencies(*adj_dicts: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Merge multiple adjacency dicts into one (union of all edges)."""
+    merged: dict[str, set[str]] = {}
+    for adj in adj_dicts:
+        for contig, neighbors in adj.items():
+            merged.setdefault(contig, set()).update(neighbors)
+    return {k: sorted(v) for k, v in merged.items()}
+
+
 def load_binner_assignments(paths: dict[str, Path]) -> dict[str, dict[str, Optional[str]]]:
     """Load contig→bin assignments from each binner.
 

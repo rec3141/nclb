@@ -24,7 +24,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from nclb.identity import (
-    build_identities, load_gfa_graph, ContigIdentity, CommunityProfile,
+    build_identities, load_gfa_graph, load_read_adjacency, merge_adjacencies,
+    ContigIdentity, CommunityProfile,
 )
 from nclb.voices import (
     ContigToolkit, CONTIG_TOOLS_OPENAI, parse_json_response,
@@ -41,12 +42,7 @@ ROUND1_SYSTEM = """You are the voice of metagenome-assembled genome communities.
 You have tools to investigate any contig or community. Use them to understand
 why members are uneasy before deciding whether to release them.
 
-IMPORTANT biological rules:
-- PROVIRUS contigs are integrated phages — composition divergence is EXPECTED.
-  Do NOT release a provirus just because its GC/TNF differs from the host.
-- PLASMID contigs are mobile elements the organism carries — not contamination.
-- Only release contigs with MULTIPLE lines of evidence: zero coverage AND
-  graph isolation AND conflicting oracle testimony AND no MGE explanation.
+Investigate thoroughly, weigh the evidence, and make your best judgment.
 
 After investigating, respond with JSON (no commentary):
 {"community": "name", "assessment": "narrative", "release": [{"contig": "name", "reason": "evidence"}], "concerns": []}"""
@@ -56,14 +52,8 @@ ROUND2_SYSTEM = """You speak for unhoused contigs seeking community.
 You have tools to investigate each contig's identity, graph connections,
 and resonance with candidate communities. Call them to build evidence.
 
-Strategy:
-1. Call who_am_i() to learn the contig's full identity
-2. Call find_graph_connections() to see which communities it's physically linked to
-3. Call how_do_i_resonate_with() for promising communities
-4. Compare coverage profiles — do they track together across samples?
-
-For VIRAL/PLASMID/PROVIRUS contigs: graph connections to a host community
-are strong evidence of integration. Place them with the host.
+These contigs were recognized by binning algorithms but not placed in the
+consensus. Investigate each and find where they belong.
 
 After investigating, respond with JSON (no commentary):
 {"decisions": [{"contig": "name", "action": "join|wait|wander", "community": "name_or_null", "evidence": "specific signals", "valence": 0.0}]}"""
@@ -486,7 +476,23 @@ def main():
         defensefinder_path=df_path if df_path.exists() else None,
         prokka_gff_path=prokka_gff_path,
     )
-    adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
+    gfa_adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
+
+    # Load read-bridged adjacency from BAMs (supplementary alignments)
+    bam_files = sorted(mapping_dir.glob("*.sorted.bam"))
+    if bam_files:
+        read_adj = load_read_adjacency(bam_files)
+        adjacency = merge_adjacencies(gfa_adjacency, read_adj)
+        log(f"[INFO] Adjacency: GFA={len(gfa_adjacency)} contigs, "
+            f"read-bridged={len(read_adj)} contigs, "
+            f"merged={len(adjacency)} contigs")
+        # Update contig identity connections with merged adjacency
+        for name, c in identities.items():
+            c.connections = adjacency.get(name, [])
+    else:
+        adjacency = gfa_adjacency
+        log(f"[INFO] No BAM files found in {mapping_dir}, using GFA adjacency only")
+
     log(f"[INFO] Loaded {len(identities):,} contigs, {len(communities)} DAS Tool communities")
 
     # Seed additional communities from binner agreement
