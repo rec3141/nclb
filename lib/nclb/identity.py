@@ -447,6 +447,105 @@ def load_dastool_summary(path: Path) -> dict[str, dict]:
     return bins
 
 
+def load_scg_assignments(
+    bacteria_scg_path: Optional[Path] = None,
+    archaea_scg_path: Optional[Path] = None,
+) -> tuple[dict[str, list[str]], set[str]]:
+    """Load DAS Tool single-copy gene assignments per contig.
+
+    Format: {contig}_{gene_number}\t{scg_name} (tab-separated, no header)
+
+    Returns:
+        (per_contig_scgs, full_scg_set) where per_contig_scgs maps contig name
+        to deduplicated list of SCG names, and full_scg_set is the union of all
+        unique bacterial SCG names (used for missing_markers calculation).
+    """
+    per_contig: dict[str, set[str]] = {}
+    full_scg_set: set[str] = set()
+
+    for scg_path, is_bacteria in [
+        (bacteria_scg_path, True),
+        (archaea_scg_path, False),
+    ]:
+        if scg_path is None or not scg_path.exists():
+            continue
+        with open(scg_path) as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                protein_id, scg_name = parts[0], parts[1]
+                # Strip _N suffix from protein ID to get contig name
+                # e.g. contig_10109_3 -> contig_10109
+                last_underscore = protein_id.rfind("_")
+                if last_underscore > 0:
+                    contig = protein_id[:last_underscore]
+                else:
+                    contig = protein_id
+                per_contig.setdefault(contig, set()).add(scg_name)
+                if is_bacteria:
+                    full_scg_set.add(scg_name)
+
+    result = {k: sorted(v) for k, v in per_contig.items()}
+    return result, full_scg_set
+
+
+def load_prokka_genes(
+    gff_path: Path,
+    contig_lengths: dict[str, int],
+) -> dict[str, dict]:
+    """Parse Prokka GFF for gene names and coding density per contig.
+
+    Returns {contig: {"genes": [named_genes], "coding_density": float}}
+    where named_genes excludes hypothetical proteins and is deduplicated.
+    Coding density = sum(CDS bp) / contig_length.
+    """
+    contig_cds_bp: dict[str, int] = {}
+    contig_genes: dict[str, set[str]] = {}
+
+    with open(gff_path) as f:
+        for line in f:
+            if line.startswith("##FASTA"):
+                break
+            if line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 9 or parts[2] != "CDS":
+                continue
+            contig = parts[0]
+            start = int(parts[3])
+            end = int(parts[4])
+            cds_len = end - start + 1
+
+            contig_cds_bp[contig] = contig_cds_bp.get(contig, 0) + cds_len
+
+            attrs = parts[8]
+            # Extract gene= attribute value (named genes only)
+            gene_name = None
+            for attr in attrs.split(";"):
+                if attr.startswith("gene="):
+                    gene_name = attr[5:]
+                    break
+            if gene_name:
+                # Strip copy-number suffix (e.g. dnaA_1 -> dnaA)
+                gene_clean = re.sub(r'_\d+$', '', gene_name)
+                contig_genes.setdefault(contig, set()).add(gene_clean)
+
+    result: dict[str, dict] = {}
+    for contig in set(contig_cds_bp) | set(contig_genes):
+        length = contig_lengths.get(contig, 0)
+        coding_density = contig_cds_bp.get(contig, 0) / length if length > 0 else 0.0
+        genes = sorted(contig_genes.get(contig, set()))
+        result[contig] = {
+            "genes": genes,
+            "coding_density": coding_density,
+        }
+    return result
+
+
 def load_genomad_viruses(path: Path) -> dict[str, dict]:
     """Load geNomad virus_summary.tsv."""
     viruses = {}
@@ -843,6 +942,8 @@ def build_identities(
     macsyfinder_path: Optional[Path] = None,
     defensefinder_path: Optional[Path] = None,
     prokka_gff_path: Optional[Path] = None,
+    bacteria_scg_path: Optional[Path] = None,
+    archaea_scg_path: Optional[Path] = None,
 ) -> tuple[dict[str, ContigIdentity], dict[str, CommunityProfile]]:
     """Build identity cards for all contigs and community profiles.
 
@@ -878,6 +979,17 @@ def build_identities(
     if defensefinder_path and prokka_gff_path:
         df_gene_hits, df_systems = load_defensefinder(defensefinder_path)
         df_data = map_defensefinder_to_contigs(df_gene_hits, df_systems, prokka_gff_path)
+
+    # Load SCG assignments
+    scg_data: dict[str, list[str]] = {}
+    full_scg_set: set[str] = set()
+    if bacteria_scg_path or archaea_scg_path:
+        scg_data, full_scg_set = load_scg_assignments(bacteria_scg_path, archaea_scg_path)
+
+    # Load Prokka gene names and coding density
+    prokka_data: dict[str, dict] = {}
+    if prokka_gff_path and prokka_gff_path.exists():
+        prokka_data = load_prokka_genes(prokka_gff_path, contig_lengths)
 
     # Build identity cards for every contig that has TNF data
     identities: dict[str, ContigIdentity] = {}
@@ -975,6 +1087,17 @@ def build_identities(
             identity.defense_systems = dfs
             identity.has_defense_system = True
 
+        # Annotate with SCG marker genes
+        scgs = scg_data.get(name)
+        if scgs:
+            identity.marker_genes = scgs
+
+        # Annotate with Prokka gene names and coding density
+        prokka = prokka_data.get(name)
+        if prokka:
+            identity.gifts = prokka["genes"]
+            identity.coding_density = prokka["coding_density"]
+
         identities[name] = identity
 
     # Build community profiles
@@ -1004,6 +1127,15 @@ def build_identities(
         else:
             elder_rank = "none"
 
+        # Compute marker gene inventory from member contigs
+        inventory: set[str] = set()
+        for m in members:
+            mid = identities.get(m)
+            if mid:
+                inventory.update(mid.marker_genes)
+        marker_gene_inventory = sorted(inventory)
+        missing_markers = sorted(full_scg_set - inventory) if full_scg_set else []
+
         profile = CommunityProfile(
             name=bin_name,
             source_binner=summary["source"],
@@ -1019,6 +1151,8 @@ def build_identities(
             contamination=checkm2.get("contamination", 0.0),
             checkm2_completeness=checkm2.get("completeness", 0.0),
             elder_rank=elder_rank,
+            marker_gene_inventory=marker_gene_inventory,
+            missing_markers=missing_markers,
         )
         communities[bin_name] = profile
 

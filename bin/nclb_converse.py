@@ -457,6 +457,10 @@ def main():
         if gffs:
             prokka_gff_path = gffs[-1]
 
+    # SCG files from DAS Tool
+    bacteria_scg = binning_dir / "dastool" / "bacteria.scg"
+    archaea_scg = binning_dir / "dastool" / "archaea.scg"
+
     identities, communities = build_identities(
         tnf_path=assembly_dir / "tnf.tsv",
         depths_path=mapping_dir / "depths.txt",
@@ -475,6 +479,8 @@ def main():
         macsyfinder_path=msf_path if msf_path.exists() else None,
         defensefinder_path=df_path if df_path.exists() else None,
         prokka_gff_path=prokka_gff_path,
+        bacteria_scg_path=bacteria_scg if bacteria_scg.exists() else None,
+        archaea_scg_path=archaea_scg if archaea_scg.exists() else None,
     )
     gfa_adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
 

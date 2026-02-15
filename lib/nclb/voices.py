@@ -372,6 +372,17 @@ CONTIG_TOOLS_ANTHROPIC = [
         },
     },
     {
+        "name": "what_did_the_oracles_say",
+        "description": "Returns all binner (oracle) assignments for a contig — what each binning algorithm said, voice strength, and consensus placement.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contig_name": {"type": "string", "description": "Name of the contig"},
+            },
+            "required": ["contig_name"],
+        },
+    },
+    {
         "name": "how_do_i_resonate_with",
         "description": "Computes how well a contig resonates with a specific community. Returns valence, harmony (TNF cosine), rhythm (coverage correlation), kinship (graph), raw coverage profiles, and GC comparison.",
         "input_schema": {

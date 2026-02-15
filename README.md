@@ -16,7 +16,8 @@ Pure Python, no LLM. Builds an identity card for every contig from pipeline outp
 - **Energy** — coverage depth across samples
 - **Ancestry** — taxonomic classification (Kaiju, when available)
 - **Connections** — assembly graph neighbors from the Flye GFA
-- **Gifts** — marker genes carried (from DAS Tool SCG analysis)
+- **Gifts** — named genes from Prokka/Bakta annotation (e.g. dnaA, ftsZ) + coding density
+- **Marker genes** — single-copy core genes from DAS Tool SCG analysis (51 bacterial, 19 archaeal)
 - **Testimony** — what each of 5 binners (SemiBin2, MetaBAT2, MaxBin2, LorBin, COMEBin) said
 - **MGE status** — viral, plasmid, or provirus annotations from geNomad + CheckV
 
@@ -60,8 +61,10 @@ valence = 0.30 * harmony      (TNF cosine similarity to community centroid)
         + 0.25 * rhythm        (coverage Pearson correlation)
         + 0.15 * kinship       (fraction of graph neighbors in community)
         + 0.15 * recognition   (binner consensus agreement)
-        + 0.15 * contribution  (marker genes filling community gaps)
+        + 0.15 * contribution  (SCG marker genes filling community gaps)
 ```
+
+The contribution component uses DAS Tool single-copy gene assignments: if a contig carries SCGs that the community is missing, it scores higher for that community. Community `missing_markers` is computed as the set difference between the 51 bacterial SCGs and the union of all member SCGs.
 
 There is no cliff edge at 90% completeness or 5% contamination. A community at 89% completeness with perfect harmony is valued. The system optimizes for collective wellbeing, not MIMAG checkboxes. (MIMAG tiers are still reported for comparability.)
 
@@ -71,13 +74,13 @@ During Gathering 2, the LLM acts as the voice for contigs, calling tools to gath
 
 | Tool | Purpose |
 |------|---------|
-| `who_am_i(contig)` | Full identity card (composition, coverage, GC, MGE status, gifts) |
+| `who_am_i(contig)` | Full identity card (composition, coverage, GC, MGE status, gifts, marker genes) |
 | `who_are_my_neighbors(contig)` | Assembly graph neighbors with community status |
 | `what_did_the_oracles_say(contig)` | All 5 binner assignments |
 | `how_do_i_resonate_with(contig, community)` | Valence breakdown with raw coverage profiles |
 | `what_is_this_community(community)` | Full community profile (members, harmony, completeness) |
-| `what_gifts_are_missing(community)` | Marker genes the community needs |
-| `what_would_change_if_i_joined(contig, community)` | Impact prediction (wholeness delta) |
+| `what_gifts_are_missing(community)` | SCG marker genes the community still needs for completeness |
+| `what_would_change_if_i_joined(contig, community)` | Impact prediction (size, GC shift, contributed SCG markers) |
 | `who_resonates_with_me(contig, k)` | K nearest contigs by TNF similarity |
 | `find_graph_connections(contig)` | Which communities is this contig graph-connected to |
 
@@ -186,7 +189,7 @@ nclb/
 
 - **Gathering 3** — Complete. Deterministic conflict resolution, community FASTA extraction, chronicle generation. Produces all output files.
 
-- **Contig tools** — All 9 tools implemented and working. The LLM calls them during conversations to discover data about each contig.
+- **Contig tools** — All 9 tools implemented and working (including `what_did_the_oracles_say`, now advertised to the LLM). The LLM calls them during conversations to discover data about each contig.
 
 - **Elder tools** — Library implemented (`elders.py`): BLAST, MAFFT+FastTree phylogeny, minimap2 ANI, mobile element detection, read mapping, targeted re-assembly. Tool definitions ready for Claude tool-use.
 
@@ -233,9 +236,14 @@ results/
 │   ├── comebin/contig_bins.tsv
 │   ├── dastool/
 │   │   ├── contig2bin.tsv      DAS Tool consensus (required)
-│   │   └── summary.tsv         DAS Tool quality summary (required)
+│   │   ├── summary.tsv         DAS Tool quality summary (required)
+│   │   ├── bacteria.scg        Bacterial SCG assignments (optional, enables contribution valence)
+│   │   └── archaea.scg         Archaeal SCG assignments (optional)
 │   └── checkm2/
 │       └── quality_report.tsv  (optional, improves Elder ranking)
+├── annotation/                 (optional, populates gifts + coding density)
+│   └── prokka/
+│       └── *.gff               Prokka GFF annotation (auto-discovered)
 ├── mge/                        (optional, enables MGE-aware placement)
 │   ├── genomad/
 │   │   ├── virus_summary.tsv
