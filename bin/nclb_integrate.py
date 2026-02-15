@@ -27,6 +27,7 @@ from nclb.graph import graph_connectivity
 from nclb.mediator import extract_proposals, resolve_deterministic, apply_proposals
 from nclb.journal import (
     build_chronicle, write_chronicle, write_contig_membership, write_fit_report,
+    write_journal,
 )
 
 
@@ -80,7 +81,7 @@ def recompute_metrics(
         if not members:
             continue
 
-        comm.tnf_coherence = tnf_coherence(members)
+        comm.tnf_coherence, comm.tnf_sim_stdev = tnf_coherence(members)
         comm.coverage_correlation = coverage_coherence(members)
         comm.graph_connectivity = graph_connectivity(comm.members, adjacency)
         comm.total_size = sum(c.size for c in members)
@@ -244,6 +245,12 @@ def main():
 
     # --- Write outputs ---
     log("[INFO] Writing outputs...")
+
+    # Append-only bin journal
+    journal_path = output_dir / "bin_journal.jsonl"
+    run_id = write_journal(journal_path, changes, assembly_stats,
+                           communities, identities, proposals_data)
+    log(f"[INFO] Journal: {run_id} → {journal_path}")
 
     # Chronicle
     write_chronicle(chronicle, output_dir)

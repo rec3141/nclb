@@ -320,6 +320,135 @@ def write_chronicle(chronicle: Chronicle, output_dir: Path):
         f.write(chronicle.to_markdown())
 
 
+# ---------------------------------------------------------------------------
+# Append-only bin journal (JSONL)
+# ---------------------------------------------------------------------------
+
+def _next_run_id(journal_path: Path) -> str:
+    """Read the last run_start event and return the next run ID."""
+    last_id = 0
+    if journal_path.exists():
+        with open(journal_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if obj.get("type") == "run_start":
+                        rid = obj.get("run", "r000")
+                        last_id = max(last_id, int(rid[1:]))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    return f"r{last_id + 1:03d}"
+
+
+def write_journal(
+    journal_path: Path,
+    changes: dict,
+    assembly_stats: dict,
+    communities: dict[str, "CommunityProfile"],
+    identities: dict[str, "ContigIdentity"],
+    proposals_data: dict,
+) -> str:
+    """Append one run's events to the bin journal. Returns the run ID."""
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    run_id = _next_run_id(journal_path)
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    # Collect Round 1 summaries keyed by bin name
+    summaries: dict[str, str] = {}
+    for prop in proposals_data.get("proposals", []):
+        if prop.get("round") == 1:
+            result = prop.get("result", {})
+            s = result.get("summary")
+            if s and prop.get("bin"):
+                summaries[prop["bin"]] = s
+
+    events: list[dict] = []
+
+    # run_start
+    events.append({
+        "ts": ts, "run": run_id, "type": "run_start",
+        "model": proposals_data.get("model", "unknown"),
+        "n_communities": assembly_stats.get("total_communities", 0),
+        "n_contigs": assembly_stats.get("total_contigs", 0),
+    })
+
+    # Track touched bins for snapshots
+    touched_bins: set[str] = set()
+
+    # releases
+    for r in changes.get("released", []):
+        contig_id = identities.get(r["contig"])
+        events.append({
+            "ts": ts, "run": run_id, "type": "release",
+            "bin": r["from"], "contig": r["contig"],
+            "reason": r.get("reason", ""),
+            "size": contig_id.size if contig_id else 0,
+        })
+        touched_bins.add(r["from"])
+
+    # joins
+    for j in changes.get("joined", []):
+        contig_id = identities.get(j["contig"])
+        events.append({
+            "ts": ts, "run": run_id, "type": "join",
+            "bin": j["to"], "contig": j["contig"],
+            "evidence": j.get("evidence", ""),
+            "fit_score": j.get("fit_score", 0.0),
+            "size": contig_id.size if contig_id else 0,
+        })
+        touched_bins.add(j["to"])
+
+    # founded
+    for nc in changes.get("new_communities_founded", []):
+        events.append({
+            "ts": ts, "run": run_id, "type": "founded",
+            "bin": nc["name"],
+            "n_members": nc.get("n_members", 0),
+            "total_size": nc.get("total_size", 0),
+            "reason": nc.get("reason", ""),
+        })
+        touched_bins.add(nc["name"])
+
+    # bin_snapshot for each touched bin
+    for bin_name in sorted(touched_bins):
+        comm = communities.get(bin_name)
+        if not comm:
+            continue
+        snap = {
+            "ts": ts, "run": run_id, "type": "bin_snapshot",
+            "bin": bin_name,
+            "n_members": len(comm.members),
+            "total_size": comm.total_size,
+            "completeness": comm.completeness,
+            "redundancy": comm.redundancy,
+            "tnf_coherence": round(comm.tnf_coherence, 4),
+            "quality_tier": comm.quality_tier,
+        }
+        if bin_name in summaries:
+            snap["summary"] = summaries[bin_name]
+        events.append(snap)
+
+    # run_end
+    events.append({
+        "ts": ts, "run": run_id, "type": "run_end",
+        "n_released": len(changes.get("released", [])),
+        "n_joined": len(changes.get("joined", [])),
+        "n_founded": len(changes.get("new_communities_founded", [])),
+        "housed_before": assembly_stats.get("housed_before", 0),
+        "housed_after": assembly_stats.get("housed_after", 0),
+    })
+
+    # Append all events
+    with open(journal_path, "a") as f:
+        for ev in events:
+            f.write(json.dumps(ev, separators=(",", ":")) + "\n")
+
+    return run_id
+
+
 def write_contig_membership(
     identities: dict[str, ContigIdentity],
     output_dir: Path,

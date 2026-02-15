@@ -234,11 +234,15 @@ class ContigToolkit:
             "bin": self._display(bin_name),
             "fit_score": round(v, 4),
             "tnf_cosine_similarity": round(tnf_cos, 4),
+            "bin_tnf_coherence": round(comm.tnf_coherence, 4),
+            "tnf_zscore": round(abs(tnf_cos - comm.tnf_coherence) / comm.tnf_sim_stdev, 2) if comm.tnf_sim_stdev > 0 else 0.0,
             "cov_pearson_r": round(cov_r, 4) if cov_r is not None else None,
             "graph_neighbor_fraction": round(neighbor_frac, 4) if neighbor_frac is not None else None,
             "contig_gc": round(c.gc, 4),
             "bin_mean_gc": round(comm.mean_gc, 4),
             "gc_delta": round(abs(c.gc - comm.mean_gc), 4),
+            "bin_gc_stdev": round(comm.gc_stdev, 4),
+            "gc_zscore": round(abs(c.gc - comm.mean_gc) / comm.gc_stdev, 2) if comm.gc_stdev > 0 else 0.0,
             "bin_completeness": round(comm.completeness, 2),
             "bin_quality_tier": comm.quality_tier,
             "signals_used": available_signals,
@@ -380,6 +384,33 @@ class ContigToolkit:
             "features": features[start:start + page_size],
         }
 
+    def get_taxonomy(self, contig_name: str) -> dict:
+        """All taxonomy sources for a contig."""
+        c = self.identities.get(contig_name)
+        if not c:
+            return {"error": f"Unknown contig: {contig_name}"}
+        result = {"contig": contig_name, "sources": {}}
+        for source, data in c.taxonomy.items():
+            result["sources"][source] = data
+        result["primary_lineage"] = c.ancestry
+        result["n_sources_classified"] = len(c.taxonomy)
+        # Agreement check: do all sources agree at genus level?
+        genera = set()
+        for data in c.taxonomy.values():
+            lineage = data.get("lineage", "")
+            parts = [p.strip() for p in lineage.split(";")]
+            # GTDB-style prefixed lineage (sendsketch, kraken2)
+            prefixed = [p for p in parts if p.startswith("g__")]
+            if prefixed:
+                genera.add(prefixed[0].lower())
+            elif len(parts) >= 6:
+                # Unprefixed lineage (kaiju): d;p;c;o;f;g;s — genus is index 5
+                genus = parts[5].strip()
+                if genus:
+                    genera.add(f"g__{genus}".lower())
+        result["genus_agreement"] = len(genera) > 0 and len(genera) <= 1
+        return result
+
     def clear_cache(self):
         """Clear the tool result cache (call between conversations)."""
         self._cache.clear()
@@ -397,6 +428,7 @@ class ContigToolkit:
             "find_similar_contigs": self.find_similar_contigs,
             "find_graph_connections": self.find_graph_connections,
             "read_annotations": self.read_annotations,
+            "get_taxonomy": self.get_taxonomy,
         }
 
         fn = dispatch_map.get(tool_name)
@@ -516,6 +548,17 @@ CONTIG_TOOLS_ANTHROPIC = [
             "properties": {
                 "contig_name": {"type": "string", "description": "Name of the contig"},
                 "page": {"type": "integer", "description": "Page number (default 1)", "default": 1},
+            },
+            "required": ["contig_name"],
+        },
+    },
+    {
+        "name": "get_taxonomy",
+        "description": "Returns taxonomy classifications from all available sources (Kaiju, SendSketch, Kraken2). Shows lineage, confidence metrics, and whether sources agree at genus level.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contig_name": {"type": "string", "description": "Contig name"},
             },
             "required": ["contig_name"],
         },
