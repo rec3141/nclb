@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from nclb.identity import (
     build_identities, load_gfa_graph, load_read_adjacency, merge_adjacencies,
+    load_bakta_annotations,
     ContigIdentity, CommunityProfile,
 )
 from nclb.voices import (
@@ -40,20 +41,57 @@ from nclb.valence import contig_valence, tnf_coherence, coverage_coherence
 ROUND1_SYSTEM = """You are the voice of metagenome-assembled genome communities.
 
 You have tools to investigate any contig or community. Use them to understand
-why members are uneasy before deciding whether to release them.
+why members are uneasy before deciding what action to take.
+
+Available tools:
+- who_am_i(contig): size, GC%, coverage, taxonomy, domain (prokaryotic/eukaryotic/organellar), gifts (gene names), marker_genes (SCGs), n_cds, MGE status (viral/plasmid/provirus), defense systems, integrons, secretion systems, genomic islands, voice strength
+- who_are_my_neighbors(contig): assembly graph neighbors with their community assignments
+- what_did_the_oracles_say(contig): per-binner assignments, voice strength, consensus placement
+- how_do_i_resonate_with(contig, community): valence score, harmony (TNF cosine), rhythm (coverage correlation), kinship (graph connectivity), GC comparison
+- what_is_this_community(community): members, total size, GC range, completeness, contamination, coverage profile, harmony metrics, elder rank, marker gene inventory
+- what_gifts_are_missing(community): marker genes the community still needs for completeness
+- what_would_change_if_i_joined(contig, community): predicted size/GC shift, new marker gene contributions
+- find_graph_connections(contig): which communities this contig connects to via assembly graph
+- read_annotations(contig, page=1): paginated CDS annotation table — gene name, product, start/stop, strand, KEGG/EC/Pfam cross-references (20 features per page)
+
+Actions you can recommend:
+- RELEASE a contig: remove it from this community (it becomes unhoused). Only release
+  contigs that clearly do not belong — e.g. different taxonomy, wildly different GC/coverage,
+  no graph connections, low binner agreement. Strong binner agreement (voice >= 3) is evidence
+  a contig BELONGS, not a reason to release it.
+- SPLIT the community: if you find the community contains two or more distinct groups
+  (different phyla, divergent coverage patterns, bimodal GC), recommend splitting it.
+  List which contigs belong to each proposed sub-group.
 
 Investigate thoroughly, weigh the evidence, and make your best judgment.
 
 After investigating, respond with JSON (no commentary):
-{"community": "name", "assessment": "narrative", "release": [{"contig": "name", "reason": "evidence"}], "concerns": []}"""
+{"community": "name", "assessment": "narrative", "release": [{"contig": "name", "reason": "evidence"}], "split": [{"name": "descriptive label", "members": ["contig1", "contig2"]}], "concerns": []}"""
 
 ROUND2_SYSTEM = """You speak for unhoused contigs seeking community.
 
 You have tools to investigate each contig's identity, graph connections,
 and resonance with candidate communities. Call them to build evidence.
 
+Available tools:
+- who_am_i(contig): size, GC%, coverage, taxonomy, domain (prokaryotic/eukaryotic/organellar), gifts (gene names), marker_genes (SCGs), n_cds, MGE status (viral/plasmid/provirus), defense systems, integrons, secretion systems, genomic islands, voice strength
+- who_are_my_neighbors(contig): assembly graph neighbors with their community assignments
+- what_did_the_oracles_say(contig): per-binner assignments, voice strength, consensus placement
+- how_do_i_resonate_with(contig, community): valence score, harmony (TNF cosine), rhythm (coverage correlation), kinship (graph connectivity), GC comparison
+- what_is_this_community(community): members, total size, GC range, completeness, contamination, coverage profile, harmony metrics, elder rank, marker gene inventory
+- what_gifts_are_missing(community): marker genes the community still needs for completeness
+- what_would_change_if_i_joined(contig, community): predicted size/GC shift, new marker gene contributions
+- find_graph_connections(contig): which communities this contig connects to via assembly graph
+- read_annotations(contig, page=1): paginated CDS annotation table — gene name, product, start/stop, strand, KEGG/EC/Pfam cross-references (20 features per page)
+
 These contigs were recognized by binning algorithms but not placed in the
 consensus. Investigate each and find where they belong.
+
+CRITICAL: Only use community names that appear in your prompt's candidate list or
+that are returned by find_graph_connections() / who_are_my_neighbors() tool calls.
+The testimony field in who_am_i() shows per-binner bin IDs (e.g. "semibin_074")
+which are NOT valid community names — never use binner IDs as community names.
+Never invent or guess community names. If no valid community is found, use "wait".
 
 After investigating, respond with JSON (no commentary):
 {"decisions": [{"contig": "name", "action": "join|wait|wander", "community": "name_or_null", "evidence": "specific signals", "valence": 0.0}]}"""
@@ -95,6 +133,12 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
             parts.append("integron")
         if result.get("has_secretion_system"):
             parts.append("secretion")
+        domain = result.get("domain", "unknown")
+        if domain != "unknown":
+            parts.append(domain)
+        n_cds = result.get("n_cds", 0)
+        if n_cds:
+            parts.append(f"{n_cds} CDS")
         parts.append(f"voice={result.get('voice_strength', 0)}")
         return ", ".join(parts)
 
@@ -143,6 +187,12 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         housed = sum(1 for n in neighbors if n.get("community"))
         return f"{len(neighbors)} neighbors ({housed} housed)"
 
+    if tool_name == "read_annotations":
+        return (
+            f"page {result.get('page', 1)}/{result.get('total_pages', 1)}, "
+            f"{result.get('total_features', 0)} total features"
+        )
+
     # Fallback
     return json.dumps(result, default=str)[:120]
 
@@ -171,6 +221,7 @@ def run_tool_conversation(
 
     tool_calls_total = 0
     nudged = False
+    recent_call_sigs: list[str] = []  # track per-round call signatures for loop detection
     # Reserve last 3 rounds for winding down: nudge at -3, remind at -2,
     # force text at -1
     wind_down_start = max(max_rounds - 3, max_rounds // 2)
@@ -269,6 +320,27 @@ def run_tool_conversation(
                     "tool_call_id": tc.id,
                     "content": json.dumps(result, default=str),
                 })
+
+            # Loop detection: if same tools called 3 rounds in a row, break
+            round_sig = "|".join(
+                f"{tc.function.name}:{tc.function.arguments}"
+                for tc in msg.tool_calls
+            )
+            recent_call_sigs.append(round_sig)
+            if len(recent_call_sigs) >= 3 and len(set(recent_call_sigs[-3:])) == 1:
+                if log_fn:
+                    log_fn("    [WARNING] Loop detected — same tools called 3x, forcing decision")
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You are repeating the same tool calls. You already have "
+                        "all the information you need. Produce your final JSON "
+                        "response NOW based on the evidence gathered so far."
+                    ),
+                })
+                nudged = True
+                # Jump to wind-down
+                wind_down_start = min(wind_down_start, round_num + 1)
             continue
 
         # No tool calls — this is the final response
@@ -346,15 +418,19 @@ def run_tool_conversation(
 # Round builders (brief prompts — tools provide the data)
 # ---------------------------------------------------------------------------
 
-def round1_prompt(comm_name: str, comm_data: dict, uneasy_names: list[str]) -> str:
+def round1_prompt(comm_name: str, comm_data: dict, uneasy_names: list[str],
+                  display_name: str | None = None) -> str:
     """Brief prompt for Round 1 — the LLM investigates via tools."""
     uneasy_section = "None — all members have positive valence."
     if uneasy_names:
         uneasy_section = ", ".join(uneasy_names)
 
-    return f"""Examine community {comm_name} [{comm_data.get('elder_rank', 'none')}].
+    shown_name = display_name or comm_name
+    elder = comm_data.get('elder_rank', 'none')
+    return f"""Examine community "{shown_name}".
 
 Quick overview:
+  Elder rank: {elder}
   Members: {len(comm_data.get('members', []))}
   Size: {comm_data['total_size']:,} bp
   Wholeness: {comm_data['completeness']:.1f}% | Redundancy: {comm_data['redundancy']:.1f}%
@@ -367,16 +443,36 @@ Check their coverage, graph connections, and oracle testimony.
 Then decide which should be released."""
 
 
-def round2_prompt(contig_names: list[str]) -> str:
+def round2_prompt(
+    contig_names: list[str],
+    contig_candidates: dict[str, list[str]] | None = None,
+    community_names: dict[str, str] | None = None,
+) -> str:
     """Brief prompt for Round 2 — the LLM investigates via tools."""
-    names = ", ".join(contig_names)
-    return f"""You speak for {len(contig_names)} unhoused contigs seeking community: {names}
+    display = community_names or {}
+    lines = []
+    for name in contig_names:
+        candidates = contig_candidates.get(name, []) if contig_candidates else []
+        if candidates:
+            display_names = [display.get(c, c) for c in candidates[:5]]
+            lines.append(f"  {name}: candidates → {', '.join(display_names)}")
+        else:
+            lines.append(f"  {name}: no pre-computed candidates (use find_graph_connections)")
+
+    contig_section = "\n".join(lines)
+    return f"""You speak for {len(contig_names)} unhoused contigs seeking community.
+
+Contigs and their candidate communities:
+{contig_section}
 
 For each contig:
 1. Call who_am_i() to learn its full identity
-2. Call find_graph_connections() to see graph links to communities
-3. Call how_do_i_resonate_with() for the most promising community
-4. Decide: join, wait, or wander
+2. Call how_do_i_resonate_with(contig, community) for the candidate communities listed above
+3. If no candidates are listed, call find_graph_connections() to discover communities
+4. Decide: join (specify the community name exactly as listed), wait, or wander
+
+IMPORTANT: Only use community names from the candidate list above or from tool results.
+Binner bin IDs like "semibin_074" are NOT community names. Never invent names.
 
 Investigate each contig and recommend placement."""
 
@@ -551,6 +647,12 @@ def main():
     bacteria_scg = binning_dir / "dastool" / "bacteria.scg"
     archaea_scg = binning_dir / "dastool" / "archaea.scg"
 
+    # Eukaryotic classification (Tiara + Whokaryote consensus)
+    eukaryotic_path = results / "eukaryotic" / "consensus" / "contig_classifications.tsv"
+
+    # Bakta full-db annotation (separate from Prokka annotation dir)
+    bakta_path = results / "annotation_bakta" / "annotation.tsv"
+
     identities, communities = build_identities(
         tnf_path=assembly_dir / "tnf.tsv",
         depths_path=mapping_dir / "depths.txt",
@@ -571,6 +673,8 @@ def main():
         prokka_gff_path=prokka_gff_path,
         bacteria_scg_path=bacteria_scg if bacteria_scg.exists() else None,
         archaea_scg_path=archaea_scg if archaea_scg.exists() else None,
+        eukaryotic_path=eukaryotic_path if eukaryotic_path.exists() else None,
+        bakta_tsv_path=bakta_path if bakta_path.exists() else None,
     )
     gfa_adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
 
@@ -590,6 +694,12 @@ def main():
         log(f"[INFO] No BAM files found in {mapping_dir}, using GFA adjacency only")
 
     log(f"[INFO] Loaded {len(identities):,} contigs, {len(communities)} DAS Tool communities")
+
+    # Log eukaryotic classification stats
+    n_euk = sum(1 for c in identities.values() if c.domain_class == "eukaryotic")
+    n_org = sum(1 for c in identities.values() if c.domain_class == "organellar")
+    if n_euk or n_org:
+        log(f"[INFO] Domain classification: {n_euk} eukaryotic, {n_org} organellar contigs")
 
     # Seed additional communities from binner agreement
     from nclb.identity import seed_communities_from_binner_agreement
@@ -638,8 +748,22 @@ def main():
             gathering = json.load(f)
         log(f"[INFO] Loaded gathering data from {gathering_path}")
 
+    # --- Load community display names (festive names) ---
+    community_names: dict[str, str] = {}
+    if gathering:
+        community_names = gathering.get("community_names", {})
+        if community_names:
+            log(f"[INFO] Loaded {len(community_names)} festive community names")
+
+    # --- Load Bakta annotations for toolkit ---
+    bakta_annotations = load_bakta_annotations(bakta_path) if bakta_path.exists() else {}
+    if bakta_annotations:
+        log(f"[INFO] Loaded Bakta annotations for {len(bakta_annotations):,} contigs")
+
     # --- Create toolkit ---
-    toolkit = ContigToolkit(identities, communities, adjacency)
+    toolkit = ContigToolkit(identities, communities, adjacency,
+                            community_names=community_names,
+                            annotations=bakta_annotations)
 
     # --- Configure OpenAI client ---
     from openai import OpenAI
@@ -709,15 +833,20 @@ def main():
             })
             continue
 
-        prompt = round1_prompt(comm_name, comm_data, uneasy)
+        prompt = round1_prompt(comm_name, comm_data, uneasy,
+                               display_name=community_names.get(comm_name))
         try:
             result = run_tool_conversation(
                 client, model, ROUND1_SYSTEM, prompt, toolkit,
                 max_rounds=args.max_tool_rounds, log_fn=log,
             )
             n_releases = len(result.get("release", []))
+            n_splits = len(result.get("split", []))
             n_tc = result.pop("_tool_calls", 0)
-            log(f"  {comm_name}: {n_releases} releases ({n_tc} tool calls)")
+            parts = [f"{n_releases} releases"]
+            if n_splits:
+                parts.append(f"{n_splits} splits")
+            log(f"  {comm_name}: {', '.join(parts)} ({n_tc} tool calls)")
             all_proposals.append({
                 "round": 1, "community": comm_name, "result": result,
             })
@@ -728,7 +857,11 @@ def main():
         len(p.get("result", {}).get("release", []))
         for p in all_proposals if p["round"] == 1
     )
-    log(f"\nRound 1 complete: {r1_releases} releases from {len(communities)} communities")
+    r1_splits = sum(
+        1 for p in all_proposals if p["round"] == 1
+        and p.get("result", {}).get("split")
+    )
+    log(f"\nRound 1 complete: {r1_releases} releases, {r1_splits} splits from {len(communities)} communities")
 
     # =====================================================================
     # Round 2: Unhoused Contigs Speak (tool-use)
@@ -737,6 +870,14 @@ def main():
     log("=" * 70)
     log("ROUND 2: UNHOUSED CONTIGS SPEAK")
     log("=" * 70)
+
+    # Build per-contig candidate lookup from gathering.json resonance_candidates
+    contig_candidates: dict[str, list[str]] = {}
+    if gathering:
+        for comm_name, candidates in gathering.get("resonance_candidates", {}).items():
+            for cand in candidates:
+                contig_candidates.setdefault(cand["contig"], []).append(comm_name)
+        log(f"  Pre-computed candidates for {len(contig_candidates)} contigs from gathering.json")
 
     # Select unhoused contigs with voice (sorted by voice strength, then size)
     unhoused = [
@@ -753,14 +894,29 @@ def main():
         batches.append([c.name for c in unhoused[i:i + args.batch_size]])
 
     for batch_idx, batch_names in enumerate(batches):
-        prompt = round2_prompt(batch_names)
+        prompt = round2_prompt(batch_names, contig_candidates, community_names)
         try:
             result = run_tool_conversation(
                 client, model, ROUND2_SYSTEM, prompt, toolkit,
                 max_rounds=args.max_tool_rounds, log_fn=log,
             )
-            n_decisions = len(result.get("decisions", []))
             n_tc = result.pop("_tool_calls", 0)
+            # Translate festive display names back to internal names
+            festive_to_internal = {v: k for k, v in community_names.items()}
+            for d in result.get("decisions", []):
+                if d.get("action") == "join" and d.get("community"):
+                    raw_name = d["community"]
+                    internal = festive_to_internal.get(raw_name)
+                    if internal:
+                        d["display_name"] = raw_name
+                        d["community"] = internal
+                    elif raw_name not in communities:
+                        # LLM invented a community name — downgrade to "wait"
+                        log(f"    [WARNING] '{raw_name}' is not a valid community — converting join→wait for {d.get('contig', '?')}")
+                        d["action"] = "wait"
+                        d["community"] = None
+                        d["evidence"] = f"(original: join {raw_name}) {d.get('evidence', '')}"
+            n_decisions = len(result.get("decisions", []))
             n_joins = sum(1 for d in result.get("decisions", []) if d.get("action") == "join")
             log(f"  Batch {batch_idx+1}/{len(batches)}: {n_decisions} decisions ({n_joins} joins, {n_tc} tool calls)")
             all_proposals.append({
@@ -808,7 +964,7 @@ def main():
 
     # --- Summary ---
     summary = {
-        "round1": {"n_communities": len(communities), "n_releases": r1_releases},
+        "round1": {"n_communities": len(communities), "n_releases": r1_releases, "n_splits": r1_splits},
         "round2": {"n_batches": len(batches), "n_decisions": r2_decisions, "n_joins": r2_joins},
         "round3": {
             "n_clusters": sum(len(p.get("clusters", [])) for p in r3_proposals),
@@ -841,7 +997,7 @@ def main():
     log("=" * 70)
     log("GATHERING 2: COMPLETE")
     log("=" * 70)
-    log(f"  Round 1: {r1_releases} releases")
+    log(f"  Round 1: {r1_releases} releases, {r1_splits} splits")
     log(f"  Round 2: {r2_joins} joins out of {r2_decisions} decisions")
     log(f"  Round 3: {summary['round3']['n_accepted']} new communities")
     log(f"  Output: {output_path}")

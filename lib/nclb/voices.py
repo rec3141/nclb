@@ -57,11 +57,27 @@ class ContigToolkit:
         communities: dict[str, CommunityProfile],
         adjacency: dict[str, list[str]],
         resonance_map=None,
+        community_names: dict[str, str] | None = None,
+        annotations: dict[str, list[dict]] | None = None,
     ):
         self.identities = identities
         self.communities = communities
         self.adjacency = adjacency
         self.resonance_map = resonance_map
+        self.annotations = annotations or {}
+        # community_names: internal_name → festive display name
+        self._to_display = community_names or {}
+        self._from_display = {v: k for k, v in self._to_display.items()}
+
+    def _resolve(self, name: str) -> str:
+        """Resolve a display name (or internal name) to internal name."""
+        return self._from_display.get(name, name)
+
+    def _display(self, name: str | None) -> str | None:
+        """Convert internal community name to display name."""
+        if name is None:
+            return None
+        return self._to_display.get(name, name)
 
     def who_am_i(self, contig_name: str) -> dict:
         """Full identity card for a contig."""
@@ -87,7 +103,7 @@ class ContigToolkit:
             "n_graph_neighbors": len(c.connections),
             "testimony": c.testimony,
             "voice_strength": c.voice_strength,
-            "community": c.community,
+            "community": self._display(c.community),
             "membership_type": c.membership_type,
             "ancestry": c.ancestry,
             "gifts": c.gifts,
@@ -96,50 +112,42 @@ class ContigToolkit:
         # Landscape position (UMAP coordinates + cluster centroid)
         if c.landscape_x != 0.0 or c.landscape_y != 0.0:
             d["position"] = [round(c.landscape_x, 2), round(c.landscape_y, 2)]
+            d["landscape_cluster"] = c.landscape_cluster if c.landscape_cluster >= 0 else None
             if c.landscape_cluster >= 0:
-                d["landscape_cluster"] = c.landscape_cluster
                 d["cluster_centroid"] = [round(c.landscape_cluster_cx, 2),
                                          round(c.landscape_cluster_cy, 2)]
-        # MGE annotations
-        if c.mge_type:
-            d["mge_type"] = c.mge_type
-        if c.is_viral:
-            d["is_viral"] = True
-            d["virus_score"] = round(c.virus_score, 4)
-            d["virus_hallmarks"] = c.virus_hallmarks
-            if c.virus_taxonomy:
-                d["virus_taxonomy"] = c.virus_taxonomy
-        if c.is_plasmid:
-            d["is_plasmid"] = True
-            d["plasmid_score"] = round(c.plasmid_score, 4)
-            d["plasmid_hallmarks"] = c.plasmid_hallmarks
-            if c.conjugation_genes:
-                d["conjugation_genes"] = c.conjugation_genes
-            if c.amr_genes:
-                d["amr_genes"] = c.amr_genes
-        if c.is_provirus:
-            d["is_provirus"] = True
-            d["proviral_length"] = c.proviral_length
-        if c.checkv_quality:
-            d["checkv_quality"] = c.checkv_quality
-            d["viral_genes"] = c.viral_genes
-            d["host_genes"] = c.host_genes
-        # Integron annotations
-        if c.has_integron:
-            d["has_integron"] = True
-            d["integrons"] = c.integrons
-        # Genomic island annotations
-        if c.has_genomic_island:
-            d["has_genomic_island"] = True
-            d["genomic_islands"] = c.genomic_islands
-        # Secretion / conjugation system annotations
-        if c.has_secretion_system:
-            d["has_secretion_system"] = True
-            d["secretion_systems"] = c.secretion_systems
-        # Defense system annotations
-        if c.has_defense_system:
-            d["has_defense_system"] = True
-            d["defense_systems"] = c.defense_systems
+        # MGE annotations — always present so LLM sees explicit negatives
+        d["mge_type"] = c.mge_type or None
+        d["is_viral"] = c.is_viral
+        d["virus_score"] = round(c.virus_score, 4) if c.is_viral else None
+        d["virus_hallmarks"] = c.virus_hallmarks if c.is_viral else None
+        d["virus_taxonomy"] = c.virus_taxonomy or None
+        d["is_plasmid"] = c.is_plasmid
+        d["plasmid_score"] = round(c.plasmid_score, 4) if c.is_plasmid else None
+        d["plasmid_hallmarks"] = c.plasmid_hallmarks if c.is_plasmid else None
+        d["conjugation_genes"] = c.conjugation_genes or []
+        d["amr_genes"] = c.amr_genes or []
+        d["is_provirus"] = c.is_provirus
+        d["proviral_length"] = c.proviral_length if c.is_provirus else None
+        d["checkv_quality"] = c.checkv_quality or None
+        d["viral_genes"] = c.viral_genes
+        d["host_genes"] = c.host_genes
+        # HGT / defense — always present
+        d["has_integron"] = c.has_integron
+        d["integrons"] = c.integrons or []
+        d["has_genomic_island"] = c.has_genomic_island
+        d["genomic_islands"] = c.genomic_islands or []
+        d["has_secretion_system"] = c.has_secretion_system
+        d["secretion_systems"] = c.secretion_systems or []
+        d["has_defense_system"] = c.has_defense_system
+        d["defense_systems"] = c.defense_systems or []
+        d["coding_density"] = round(c.coding_density, 4) if c.coding_density else None
+        # Domain classification
+        d["domain"] = c.domain_class
+        d["domain_confidence"] = c.domain_confidence
+        d["organellar_subtype"] = c.organellar_subtype
+        # Annotation summary
+        d["n_cds"] = len(self.annotations.get(c.name, []))
         return d
 
     def who_are_my_neighbors(self, contig_name: str) -> dict:
@@ -154,7 +162,7 @@ class ContigToolkit:
                 neighbors.append({
                     "name": n,
                     "size": nc.size,
-                    "community": nc.community,
+                    "community": self._display(nc.community),
                     "gc": round(nc.gc, 4),
                 })
         return {"contig": contig_name, "neighbors": neighbors}
@@ -168,7 +176,7 @@ class ContigToolkit:
             "contig": contig_name,
             "testimony": c.testimony,
             "voice_strength": c.voice_strength,
-            "consensus": c.community,
+            "consensus": self._display(c.community),
         }
 
     def how_do_i_resonate_with(self, contig_name: str, community_name: str) -> dict:
@@ -176,6 +184,7 @@ class ContigToolkit:
 
         Returns both computed metrics AND raw data for the LLM to assess.
         """
+        community_name = self._resolve(community_name)
         c = self.identities.get(contig_name)
         comm = self.communities.get(community_name)
         if not c:
@@ -202,7 +211,7 @@ class ContigToolkit:
 
         return {
             "contig": contig_name,
-            "community": community_name,
+            "community": self._display(community_name),
             "valence": round(v, 4),
             "harmony_tnf_cosine": round(harmony, 4),
             "rhythm_coverage_correlation": round(rhythm, 4),
@@ -225,11 +234,12 @@ class ContigToolkit:
 
     def what_is_this_community(self, community_name: str) -> dict:
         """Full community profile."""
+        community_name = self._resolve(community_name)
         comm = self.communities.get(community_name)
         if not comm:
             return {"error": f"Unknown community: {community_name}"}
         d = {
-            "name": comm.name,
+            "name": self._display(comm.name),
             "source_binner": comm.source_binner,
             "n_members": len(comm.members),
             "total_size": comm.total_size,
@@ -251,11 +261,12 @@ class ContigToolkit:
 
     def what_gifts_are_missing(self, community_name: str) -> dict:
         """Marker genes the community still needs."""
+        community_name = self._resolve(community_name)
         comm = self.communities.get(community_name)
         if not comm:
             return {"error": f"Unknown community: {community_name}"}
         return {
-            "community": community_name,
+            "community": self._display(community_name),
             "completeness": round(comm.completeness, 2),
             "missing_markers": comm.missing_markers,
             "n_missing": len(comm.missing_markers),
@@ -263,6 +274,7 @@ class ContigToolkit:
 
     def what_would_change_if_i_joined(self, contig_name: str, community_name: str) -> dict:
         """Predict impact of a contig joining a community."""
+        community_name = self._resolve(community_name)
         c = self.identities.get(contig_name)
         comm = self.communities.get(community_name)
         if not c or not comm:
@@ -287,7 +299,7 @@ class ContigToolkit:
 
         return {
             "contig": contig_name,
-            "community": community_name,
+            "community": self._display(community_name),
             "size_delta": c.size,
             "new_total_size": new_size,
             "gc_shift": round(gc_shift, 4),
@@ -306,7 +318,7 @@ class ContigToolkit:
                 {
                     "name": name,
                     "similarity": round(sim, 4),
-                    "community": self.identities[name].community if name in self.identities else None,
+                    "community": self._display(self.identities[name].community) if name in self.identities else None,
                 }
                 for name, sim in neighbors
             ],
@@ -318,9 +330,35 @@ class ContigToolkit:
         return {
             "contig": contig_name,
             "community_connections": [
-                {"community": name, "n_edges": n}
+                {"community": self._display(name), "n_edges": n}
                 for name, n in sorted(bridges.items(), key=lambda x: -x[1])
             ],
+        }
+
+    def read_annotations(self, contig_name: str, page: int = 1) -> dict:
+        """Paginated CDS annotation table for a contig."""
+        features = self.annotations.get(contig_name, [])
+        if not features:
+            c = self.identities.get(contig_name)
+            if not c:
+                return {"error": f"Unknown contig: {contig_name}"}
+            return {
+                "contig": contig_name,
+                "total_features": 0,
+                "page": 1,
+                "total_pages": 1,
+                "features": [],
+            }
+        page_size = 20
+        total_pages = max(1, (len(features) + page_size - 1) // page_size)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * page_size
+        return {
+            "contig": contig_name,
+            "total_features": len(features),
+            "page": page,
+            "total_pages": total_pages,
+            "features": features[start:start + page_size],
         }
 
     def dispatch(self, tool_name: str, arguments: dict) -> dict:
@@ -335,6 +373,7 @@ class ContigToolkit:
             "what_would_change_if_i_joined": self.what_would_change_if_i_joined,
             "who_resonates_with_me": self.who_resonates_with_me,
             "find_graph_connections": self.find_graph_connections,
+            "read_annotations": self.read_annotations,
         }
 
         fn = dispatch_map.get(tool_name)
@@ -435,6 +474,18 @@ CONTIG_TOOLS_ANTHROPIC = [
             "type": "object",
             "properties": {
                 "contig_name": {"type": "string", "description": "Name of the contig"},
+            },
+            "required": ["contig_name"],
+        },
+    },
+    {
+        "name": "read_annotations",
+        "description": "Returns paginated CDS annotation table for a contig — gene name, product, start/stop, strand, KEGG/EC/Pfam cross-references. 20 features per page.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contig_name": {"type": "string", "description": "Name of the contig"},
+                "page": {"type": "integer", "description": "Page number (default 1)", "default": 1},
             },
             "required": ["contig_name"],
         },

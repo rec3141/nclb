@@ -298,31 +298,46 @@ def plot_landscape(
     all_comms = [c for c, _ in comm_counts.most_common()]
     n_comms = len(all_comms)
 
-    # Build enough distinct colors by cycling through multiple colormaps
-    _cmaps = [plt.cm.tab20, plt.cm.tab20b, plt.cm.tab20c]
+    # Generate distinct colors via golden-angle HSV spacing
+    import colorsys
     comm_colors = []
+    golden_angle = 137.508 / 360.0
     for i in range(n_comms):
-        cmap_idx = min(i // 20, len(_cmaps) - 1)
-        comm_colors.append(_cmaps[cmap_idx](i % 20))
+        hue = (i * golden_angle) % 1.0
+        sat = 0.55 + 0.4 * ((i * 3) % 7) / 6.0  # vary saturation
+        val = 0.65 + 0.3 * ((i * 5) % 11) / 10.0  # vary brightness
+        comm_colors.append(colorsys.hsv_to_rgb(hue, sat, val))
 
     unhoused_mask = np.array([c == "unhoused" for c in comm_labels])
     ax.scatter(xs[unhoused_mask], ys[unhoused_mask],
                c="#E0E0E0", s=2, alpha=0.2, zorder=1, rasterized=True)
+
+    # Collect label positions at the largest contig in each community
+    import math
+    # Build size lookup from names array
+    name_to_idx = {n: i for i, n in enumerate(names)}
+    label_data = []
     for i, comm in enumerate(all_comms):
         mask = np.array([c == comm for c in comm_labels])
         display = community_names.get(comm, comm) if community_names else comm
-        short = display if len(display) <= 20 else display[:18] + ".."
         ax.scatter(xs[mask], ys[mask], c=[comm_colors[i]], s=8, alpha=0.6,
-                   label=f"{short} ({mask.sum()})", zorder=2, rasterized=True)
-        # Label at centroid for larger communities
-        if mask.sum() >= 15:
-            cx, cy = xs[mask].mean(), ys[mask].mean()
-            ax.text(cx, cy, display.split()[-1], fontsize=5, ha="center",
-                    va="center", fontweight="bold", alpha=0.8,
-                    bbox=dict(boxstyle="round,pad=0.1", facecolor="white",
-                              alpha=0.6, edgecolor="none"))
-    ncol = max(1, (n_comms + 14) // 15)
-    ax.legend(loc="upper right", fontsize=4, ncol=ncol)
+                   zorder=2, rasterized=True)
+        # Find the largest contig in this community
+        comm_indices = np.where(mask)[0]
+        largest_idx = comm_indices[sizes[comm_indices].argmax()]
+        lx, ly = xs[largest_idx], ys[largest_idx]
+        n_members = mask.sum()
+        fsize = 3.0 if n_members < 10 else 4.0 if n_members < 30 else 5.0
+        label_text = display.split()[-1] if community_names else comm.split("_")[-1]
+        label_data.append((lx, ly, label_text, fsize, comm_colors[i], n_members))
+
+    # Place labels directly on the largest contig (no displacement)
+    for lx, ly, text, fsize, color, n_members in label_data:
+        ax.text(lx, ly, text, fontsize=fsize, ha="center", va="center",
+                fontweight="bold", alpha=0.9, color=color,
+                bbox=dict(boxstyle="round,pad=0.08", facecolor="white",
+                          alpha=0.5, edgecolor="none"), zorder=3)
+
     ax.set_title(f"Communities ({n_comms} total)", fontsize=14)
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")

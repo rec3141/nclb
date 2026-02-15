@@ -9,3 +9,5 @@ work/
 .nextflow*
 .env
 .env.*
+results/
+AI_MAG_Bin_Refinery_Plan.docx

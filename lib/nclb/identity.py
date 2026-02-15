@@ -81,6 +81,11 @@ class ContigIdentity:
     defense_systems: list[dict] = field(default_factory=list)  # [{sys_id, type, subtype, genes}]
     has_defense_system: bool = False
 
+    # Domain classification (from Tiara + Whokaryote consensus)
+    domain_class: str = "unknown"             # prokaryotic|eukaryotic|organellar|unknown
+    domain_confidence: str = "low"            # high|medium|low
+    organellar_subtype: Optional[str] = None  # plastid|mitochondrion|None
+
     # Landscape position (from UMAP embedding)
     landscape_x: float = 0.0                          # UMAP x coordinate
     landscape_y: float = 0.0                          # UMAP y coordinate
@@ -920,6 +925,103 @@ def map_defensefinder_to_contigs(
     return result
 
 
+def load_eukaryotic_classification(path: Path) -> dict[str, dict]:
+    """Load Tiara + Whokaryote consensus classification.
+
+    Format: contig_id  tiara_class  whokaryote_class  consensus_class  confidence  organellar_subtype
+    Returns {contig_id: {domain_class, confidence, organellar_subtype}}.
+    """
+    results = {}
+    with open(path) as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            subtype = row.get("organellar_subtype", "").strip() or None
+            results[row["contig_id"]] = {
+                "domain_class": row.get("consensus_class", "unknown"),
+                "confidence": row.get("confidence", "low"),
+                "organellar_subtype": subtype,
+            }
+    return results
+
+
+def load_bakta_annotations(path: Path) -> dict[str, list[dict]]:
+    """Load Bakta full-db CDS annotation TSV.
+
+    Header line starts with '#Sequence Id'. Pure comment lines (e.g.
+    '# Annotated with Bakta') are skipped.
+
+    Returns {contig_id: [{start, stop, strand, gene, product, dbxrefs}]},
+    ordered by start position within each contig.
+    """
+    annotations: dict[str, list[dict]] = {}
+    with open(path) as f:
+        # Find the header line (starts with '#Sequence Id' or '#Sequence')
+        header_line = None
+        for line in f:
+            if line.startswith("#Sequence"):
+                header_line = line.lstrip("#").rstrip("\n")
+                break
+            if line.startswith("#"):
+                continue
+            # Non-comment, non-header line reached before finding header
+            break
+
+        if header_line is None:
+            return annotations
+
+        fieldnames = header_line.split("\t")
+        reader = csv.DictReader(f, fieldnames=fieldnames, delimiter="\t")
+        for row in reader:
+            if not row:
+                continue
+            contig = row.get("Sequence Id", "").strip()
+            if not contig or contig.startswith("#"):
+                continue
+            gene = row.get("Gene", "").strip() or None
+            feature = {
+                "start": int(row.get("Start", 0)),
+                "stop": int(row.get("Stop", 0)),
+                "strand": row.get("Strand", "+"),
+                "gene": gene,
+                "product": row.get("Product", "").strip(),
+                "dbxrefs": row.get("DbXrefs", "").strip(),
+            }
+            annotations.setdefault(contig, []).append(feature)
+
+    # Sort features by start position within each contig
+    for contig in annotations:
+        annotations[contig].sort(key=lambda f: f["start"])
+
+    return annotations
+
+
+def _bakta_gene_summary(
+    annotations: dict[str, list[dict]],
+    contig_lengths: dict[str, int],
+) -> dict[str, dict]:
+    """Extract per-contig gene names and coding density from Bakta annotations.
+
+    Returns {contig: {"genes": [named_genes], "coding_density": float}}.
+    """
+    result: dict[str, dict] = {}
+    for contig, features in annotations.items():
+        genes: set[str] = set()
+        cds_bp = 0
+        for f in features:
+            cds_bp += abs(f["stop"] - f["start"]) + 1
+            if f["gene"]:
+                # Strip copy-number suffix (e.g. dnaA_1 -> dnaA)
+                gene_clean = re.sub(r'_\d+$', '', f["gene"])
+                genes.add(gene_clean)
+        length = contig_lengths.get(contig, 0)
+        coding_density = cds_bp / length if length > 0 else 0.0
+        result[contig] = {
+            "genes": sorted(genes),
+            "coding_density": coding_density,
+        }
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Assembly: build all identity cards
 # ---------------------------------------------------------------------------
@@ -944,6 +1046,8 @@ def build_identities(
     prokka_gff_path: Optional[Path] = None,
     bacteria_scg_path: Optional[Path] = None,
     archaea_scg_path: Optional[Path] = None,
+    eukaryotic_path: Optional[Path] = None,
+    bakta_tsv_path: Optional[Path] = None,
 ) -> tuple[dict[str, ContigIdentity], dict[str, CommunityProfile]]:
     """Build identity cards for all contigs and community profiles.
 
@@ -990,6 +1094,17 @@ def build_identities(
     prokka_data: dict[str, dict] = {}
     if prokka_gff_path and prokka_gff_path.exists():
         prokka_data = load_prokka_genes(prokka_gff_path, contig_lengths)
+
+    # Load eukaryotic classification
+    euk_data: dict[str, dict] = {}
+    if eukaryotic_path and eukaryotic_path.exists():
+        euk_data = load_eukaryotic_classification(eukaryotic_path)
+
+    # Load Bakta annotations and extract gene summary
+    bakta_gene_data: dict[str, dict] = {}
+    if bakta_tsv_path and bakta_tsv_path.exists():
+        bakta_annot = load_bakta_annotations(bakta_tsv_path)
+        bakta_gene_data = _bakta_gene_summary(bakta_annot, contig_lengths)
 
     # Build identity cards for every contig that has TNF data
     identities: dict[str, ContigIdentity] = {}
@@ -1098,6 +1213,21 @@ def build_identities(
             identity.gifts = prokka["genes"]
             identity.coding_density = prokka["coding_density"]
 
+        # Override with Bakta gene names when available (richer annotation)
+        bakta_genes = bakta_gene_data.get(name)
+        if bakta_genes:
+            if bakta_genes["genes"]:
+                identity.gifts = bakta_genes["genes"]
+            if bakta_genes["coding_density"] > 0:
+                identity.coding_density = bakta_genes["coding_density"]
+
+        # Annotate with eukaryotic classification
+        euk = euk_data.get(name)
+        if euk:
+            identity.domain_class = euk["domain_class"]
+            identity.domain_confidence = euk["confidence"]
+            identity.organellar_subtype = euk["organellar_subtype"]
+
         identities[name] = identity
 
     # Build community profiles
@@ -1165,7 +1295,6 @@ def build_identities(
 
 def seed_communities_from_binner_agreement(
     identities: dict[str, ContigIdentity],
-    max_bin_size: int = 500,
     min_members: int = 5,
     min_total_size: int = 100_000,
 ) -> tuple[dict[str, CommunityProfile], dict[str, str]]:
@@ -1177,7 +1306,7 @@ def seed_communities_from_binner_agreement(
     Algorithm:
         1. Start at maximum agreement (all binners agree), work down to 3
         2. Build composite keys from binner labels for each combination
-        3. Filter: skip mega-bins (>max_bin_size), require ≥min_members and ≥min_total_size
+        3. Filter: require ≥min_members and ≥min_total_size
         4. Higher agreement level takes priority (no double-assignment)
 
     Returns:
@@ -1192,16 +1321,6 @@ def seed_communities_from_binner_agreement(
     n_binners = len(binner_names)
     if n_binners < 3:
         return {}, {}
-
-    # Compute bin sizes per binner to filter mega-bins
-    bin_sizes: dict[tuple[str, str], int] = {}
-    for c in identities.values():
-        for binner, label in c.testimony.items():
-            if label is not None:
-                key = (binner, label)
-                bin_sizes[key] = bin_sizes.get(key, 0) + 1
-
-    mega_bins = {k for k, v in bin_sizes.items() if v > max_bin_size}
 
     # Only consider unhoused contigs
     unhoused = {name for name, c in identities.items() if c.community is None}
@@ -1229,9 +1348,6 @@ def seed_communities_from_binner_agreement(
                 for binner in combo:
                     label = testimony.get(binner)
                     if label is None:
-                        skip = True
-                        break
-                    if (binner, label) in mega_bins:
                         skip = True
                         break
                     labels.append(f"{binner}:{label}")
