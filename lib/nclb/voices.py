@@ -390,7 +390,7 @@ class ContigToolkit:
 CONTIG_TOOLS_ANTHROPIC = [
     {
         "name": "get_contig_info",
-        "description": "Returns contig metadata: size, GC%, coverage, taxonomy, domain, gene names, marker genes, MGE status, binner assignments.",
+        "description": "Returns contig metadata: size, GC%, coverage, taxonomy, domain, gene names, marker genes, MGE status, consensus bin assignment, n_binners (how many individual tools binned it anywhere — not specific to any consensus bin).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -412,7 +412,7 @@ CONTIG_TOOLS_ANTHROPIC = [
     },
     {
         "name": "get_binner_assignments",
-        "description": "Returns per-binner bin assignments for a contig, agreement count, and consensus placement.",
+        "description": "Returns per-binner bin IDs for a contig (e.g. semibin_022, metabat_014). These are raw assignments from individual tools — each binner groups contigs independently, so per-binner IDs do NOT correspond to consensus bin names.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -423,7 +423,7 @@ CONTIG_TOOLS_ANTHROPIC = [
     },
     {
         "name": "compare_to_bin",
-        "description": "Computes fit score between a contig and a bin. Returns TNF cosine similarity, coverage Pearson r, graph neighbor fraction, and GC comparison.",
+        "description": "Computes fit score between a contig and a consensus bin. Returns TNF cosine similarity, coverage Pearson r, graph neighbor fraction, and GC comparison. Use this to evaluate whether a contig belongs in a specific bin.",
         "input_schema": {
             "type": "object",
             "properties": {
