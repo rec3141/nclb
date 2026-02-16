@@ -1051,17 +1051,17 @@ CONTIG_TOOLS_ANTHROPIC = [
             "required": ["contig_name"],
         },
     },
-    {
-        "name": "get_bin_metabolism",
-        "description": "Returns KEGG module completeness profile for a bin — metabolic capabilities grouped by category (energy, carbon, nitrogen, sulfur, biosynthesis, degradation, transport).",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "bin_name": {"type": "string", "description": "Name of the bin"},
-            },
-            "required": ["bin_name"],
-        },
-    },
+    # {
+    #     "name": "get_bin_metabolism",
+    #     "description": "Returns KEGG module completeness profile for a bin — metabolic capabilities grouped by category (energy, carbon, nitrogen, sulfur, biosynthesis, degradation, transport).",
+    #     "input_schema": {
+    #         "type": "object",
+    #         "properties": {
+    #             "bin_name": {"type": "string", "description": "Name of the bin"},
+    #         },
+    #         "required": ["bin_name"],
+    #     },
+    # },
     {
         "name": "render_umap_neighborhood",
         "description": "Render UMAP landscape image around a contig or bin. Returns a PNG image you can see. Use to visually assess cluster membership and spatial relationships.",

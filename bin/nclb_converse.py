@@ -802,22 +802,38 @@ def main():
         if c.community and c.community in communities:
             c.fit_score = cv(c, communities[c.community], adjacency)
 
-    # Compute global fit score distribution for LLM context
-    all_fit = [c.fit_score for c in identities.values()
-               if c.community and c.fit_score is not None]
-    if all_fit:
-        all_fit_sorted = sorted(all_fit)
-        n = len(all_fit_sorted)
-        fit_dist = {
-            "p25": all_fit_sorted[n // 4],
-            "median": all_fit_sorted[n // 2],
-            "p75": all_fit_sorted[3 * n // 4],
-        }
-        log(f"[INFO] Fit score distribution (n={n:,}): "
+    # Compute fit score distributions per quality tier for LLM context
+    from collections import defaultdict
+    tier_fits: dict[str, list[float]] = defaultdict(list)
+    for c in identities.values():
+        if c.community and c.fit_score is not None and c.community in communities:
+            tier = communities[c.community].quality_tier
+            tier_fits[tier].append(c.fit_score)
+
+    def _iqr(values: list[float]) -> dict:
+        s = sorted(values)
+        n = len(s)
+        return {"p25": s[n // 4], "median": s[n // 2], "p75": s[3 * n // 4], "n": n}
+
+    all_fit = []
+    for v in tier_fits.values():
+        all_fit.extend(v)
+    fit_dist = _iqr(all_fit) if all_fit else None
+    fit_by_tier: dict[str, dict] = {}
+    for tier, values in tier_fits.items():
+        if len(values) >= 4:
+            fit_by_tier[tier] = _iqr(values)
+
+    if fit_dist:
+        log(f"[INFO] Fit score distribution (n={fit_dist['n']:,}): "
             f"p25={fit_dist['p25']:+.3f}, median={fit_dist['median']:+.3f}, "
             f"p75={fit_dist['p75']:+.3f}")
-    else:
-        fit_dist = None
+        for tier in ["excellent", "high", "good", "fair", "low"]:
+            if tier in fit_by_tier:
+                d = fit_by_tier[tier]
+                log(f"[INFO]   {tier:>9s} (n={d['n']:>4d}): "
+                    f"p25={d['p25']:+.3f}, median={d['median']:+.3f}, "
+                    f"p75={d['p75']:+.3f}")
 
     # Coherence metrics are computed lazily per-bin (JIT) to avoid 3+ min startup
     from nclb.valence import community_metrics
@@ -915,9 +931,20 @@ def main():
         # Re-read system prompt each iteration (hot-editable)
         r1_system = _load_prompt("round1_system.txt")
         if fit_dist:
+            tier_lines = []
+            for tier in ["excellent", "high", "good", "fair", "low"]:
+                if tier in fit_by_tier:
+                    d = fit_by_tier[tier]
+                    tier_lines.append(
+                        f"  {tier}: p25={d['p25']:+.3f}, median={d['median']:+.3f}, "
+                        f"p75={d['p75']:+.3f} (n={d['n']})"
+                    )
             r1_system += (
-                f"\n\nFit score IQR across all binned contigs: "
-                f"[{fit_dist['p25']:+.3f}, {fit_dist['p75']:+.3f}]"
+                f"\n\nFit score distribution by bin quality tier:\n"
+                + "\n".join(tier_lines)
+                + f"\n  overall: p25={fit_dist['p25']:+.3f}, "
+                f"median={fit_dist['median']:+.3f}, p75={fit_dist['p75']:+.3f} "
+                f"(n={fit_dist['n']})"
             )
 
         # JIT: compute coherence and build data dict per-bin (avoids 3+ min startup)
