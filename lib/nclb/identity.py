@@ -99,6 +99,10 @@ class ContigIdentity:
     best_ssu_taxonomy: str = ""
     best_ssu_identity: float = 0.0
 
+    # tRNA genes (from Prokka/Aragorn)
+    n_trna: int = 0
+    trna_types: list[str] = field(default_factory=list)  # e.g. ["Thr", "Val", "Gln"]
+
     # Metabolism (per-contig summary counts)
     n_ko: int = 0        # number of KO-annotated proteins
     n_cazymes: int = 0   # number of CAZyme-annotated proteins
@@ -595,6 +599,42 @@ def load_prokka_genes(
             "genes": genes,
             "n_cds": contig_cds_count.get(contig, 0),
             "coding_density": coding_density,
+        }
+    return result
+
+
+def load_trna_from_gff(gff_path: Path) -> dict[str, dict]:
+    """Count tRNA genes per contig from Prokka GFF (Aragorn predictions).
+
+    Returns {contig: {"n_trna": int, "trna_types": [amino_acid_types]}}.
+    """
+    contig_trna_types: dict[str, set[str]] = {}
+    contig_trna_count: dict[str, int] = {}
+
+    with open(gff_path) as f:
+        for line in f:
+            if line.startswith("##FASTA"):
+                break
+            if line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 9 or parts[2] != "tRNA":
+                continue
+            contig = parts[0]
+            contig_trna_count[contig] = contig_trna_count.get(contig, 0) + 1
+            # Extract amino acid from product=tRNA-Thr(ggt)
+            attrs = parts[8]
+            for attr in attrs.split(";"):
+                if attr.startswith("product=tRNA-"):
+                    aa = attr[13:].split("(")[0]  # "Thr(ggt)" → "Thr"
+                    contig_trna_types.setdefault(contig, set()).add(aa)
+                    break
+
+    result = {}
+    for contig in contig_trna_count:
+        result[contig] = {
+            "n_trna": contig_trna_count[contig],
+            "trna_types": sorted(contig_trna_types.get(contig, set())),
         }
     return result
 
@@ -1340,8 +1380,10 @@ def build_identities(
 
     # Load Prokka gene names and coding density
     prokka_data: dict[str, dict] = {}
+    trna_data: dict[str, dict] = {}
     if prokka_gff_path and prokka_gff_path.exists():
         prokka_data = load_prokka_genes(prokka_gff_path, contig_lengths)
+        trna_data = load_trna_from_gff(prokka_gff_path)
 
     # Load eukaryotic classification
     euk_data: dict[str, dict] = {}
@@ -1479,6 +1521,12 @@ def build_identities(
             identity.n_cds = prokka["n_cds"]
             identity.coding_density = prokka["coding_density"]
 
+        # Annotate with tRNA data
+        trna = trna_data.get(name)
+        if trna:
+            identity.n_trna = trna["n_trna"]
+            identity.trna_types = trna["trna_types"]
+
         # Override with Bakta when it has richer data
         bakta_genes = bakta_gene_data.get(name)
         if bakta_genes:
@@ -1554,9 +1602,10 @@ def build_identities(
         else:
             quality_tier = "low"
 
-        # Compute marker gene inventory and rRNA types from member contigs
+        # Compute marker gene inventory, rRNA types, and tRNA types from members
         inventory: set[str] = set()
         bin_rrna_types: set[str] = set()
+        bin_trna_types: set[str] = set()
         for m in members:
             mid = identities.get(m)
             if mid:
@@ -1564,14 +1613,17 @@ def build_identities(
                 for rt in mid.rrna_types:
                     # Normalize: "16S_rRNA" → "16S", "23S_rRNA" → "23S", etc.
                     bin_rrna_types.add(rt.split("_")[0])
+                for tt in mid.trna_types:
+                    bin_trna_types.add(tt)
         marker_gene_inventory = sorted(inventory)
         missing_markers = sorted(full_scg_set - inventory) if full_scg_set else []
 
-        # Upgrade near-complete → high if 23S, 16S, 5S rRNA all present
-        # (tRNA check deferred — no tRNAscan-SE data yet)
+        # Upgrade near-complete → high if 23S+16S+5S rRNA and ≥18 tRNA types
+        # (Almeida et al. 2019)
         if quality_tier == "near-complete":
             has_all_rrna = {"5S", "16S", "23S"}.issubset(bin_rrna_types)
-            if has_all_rrna:
+            has_trna = len(bin_trna_types) >= 18
+            if has_all_rrna and has_trna:
                 quality_tier = "high"
 
         # KEGG module completeness for this bin
