@@ -788,9 +788,9 @@ def main():
             if full_scg_set:
                 comm.completeness = round(100.0 * len(inventory) / len(full_scg_set), 2)
                 c = comm.completeness
-                # MIMAG tiers (no CheckM2 for seed bins, use 0 contamination)
+                # Almeida et al. 2019 tiers (no CheckM2 for seed bins)
                 comm.quality_tier = (
-                    "high" if c > 90 else
+                    "near-complete" if c > 90 else
                     "medium" if c >= 50 else "low"
                 )
         communities.update(new_comms)
@@ -834,7 +834,7 @@ def main():
         log(f"[INFO] Fit score distribution (n={fit_dist['n']:,}): "
             f"p25={fit_dist['p25']:+.3f}, median={fit_dist['median']:+.3f}, "
             f"p75={fit_dist['p75']:+.3f}")
-        for tier in ["high", "medium", "low"]:
+        for tier in ["high", "near-complete", "medium", "low", "failed"]:
             if tier in fit_by_tier:
                 d = fit_by_tier[tier]
                 log(f"[INFO]   {tier:>9s} (n={d['n']:>4d}): "
@@ -938,7 +938,7 @@ def main():
         r1_system = _load_prompt("round1_system.txt")
         if fit_dist:
             tier_lines = []
-            for tier in ["high", "medium", "low"]:
+            for tier in ["high", "near-complete", "medium", "low", "failed"]:
                 if tier in fit_by_tier:
                     d = fit_by_tier[tier]
                     tier_lines.append(

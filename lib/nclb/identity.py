@@ -159,7 +159,7 @@ class CommunityProfile:
     kegg_modules: dict[str, float] = field(default_factory=dict)  # module_id → completeness
 
     # Quality classification
-    quality_tier: str = "low"                           # MIMAG: high|medium|low
+    quality_tier: str = "low"                           # Almeida: high|near-complete|medium|low|failed
 
 
 # ---------------------------------------------------------------------------
@@ -1539,25 +1539,40 @@ def build_identities(
 
         completeness = summary["completeness"]
         contamination = checkm2.get("contamination", summary["redundancy"])
-        # MIMAG quality tiers (Bowers et al. 2017, Nature Biotechnology)
-        # High: >90% complete, <5% contamination
-        # Medium: ≥50% complete, <10% contamination
-        # Low: <50% complete or ≥10% contamination
-        if completeness > 90 and contamination < 5:
-            quality_tier = "high"
-        elif completeness >= 50 and contamination < 10:
+        # Quality tiers per Almeida et al. 2019 (Nature)
+        # Failed: ≥10% contamination
+        # High: >90% complete, ≤5% contam, ≥18 tRNA + 23S/16S/5S rRNA
+        # Near-complete: >90% complete, ≤5% contam (no rRNA/tRNA req)
+        # Medium: ≥50% complete, ≤10% contam
+        # Low: <50% complete, ≤10% contam
+        if contamination >= 10:
+            quality_tier = "failed"
+        elif completeness > 90 and contamination <= 5:
+            quality_tier = "near-complete"  # upgraded to "high" if rRNA/tRNA present
+        elif completeness >= 50 and contamination <= 10:
             quality_tier = "medium"
         else:
             quality_tier = "low"
 
-        # Compute marker gene inventory from member contigs
+        # Compute marker gene inventory and rRNA types from member contigs
         inventory: set[str] = set()
+        bin_rrna_types: set[str] = set()
         for m in members:
             mid = identities.get(m)
             if mid:
                 inventory.update(mid.marker_genes)
+                for rt in mid.rrna_types:
+                    # Normalize: "16S_rRNA" → "16S", "23S_rRNA" → "23S", etc.
+                    bin_rrna_types.add(rt.split("_")[0])
         marker_gene_inventory = sorted(inventory)
         missing_markers = sorted(full_scg_set - inventory) if full_scg_set else []
+
+        # Upgrade near-complete → high if 23S, 16S, 5S rRNA all present
+        # (tRNA check deferred — no tRNAscan-SE data yet)
+        if quality_tier == "near-complete":
+            has_all_rrna = {"5S", "16S", "23S"}.issubset(bin_rrna_types)
+            if has_all_rrna:
+                quality_tier = "high"
 
         # KEGG module completeness for this bin
         bin_modules = kegg_data.get(bin_name, {})
