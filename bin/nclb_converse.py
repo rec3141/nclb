@@ -243,9 +243,22 @@ def run_tool_conversation(
         try:
             response = client.chat.completions.create(**call_kwargs)
         except Exception as e:
-            if log_fn:
-                log_fn(f"    [ERROR] API call failed: {e}")
-            return {"error": str(e), "tool_calls": tool_calls_total}
+            # If the last message was an image user message, drop it and retry
+            if (messages and messages[-1].get("role") == "user"
+                    and isinstance(messages[-1].get("content"), list)):
+                if log_fn:
+                    log_fn(f"    [WARNING] API failed with image message, retrying without image: {e}")
+                messages.pop()
+                try:
+                    response = client.chat.completions.create(**call_kwargs)
+                except Exception as e2:
+                    if log_fn:
+                        log_fn(f"    [ERROR] API call failed on retry: {e2}")
+                    return {"error": str(e2), "tool_calls": tool_calls_total}
+            else:
+                if log_fn:
+                    log_fn(f"    [ERROR] API call failed: {e}")
+                return {"error": str(e), "tool_calls": tool_calls_total}
 
         choice = response.choices[0]
         msg = choice.message
@@ -295,15 +308,20 @@ def run_tool_conversation(
                     result_summary = _summarize_tool_result(tc.function.name, result)
                     log_fn(f"    [{tool_calls_total}] {tc.function.name}({args_short}) → {result_summary}")
 
-                # Image-aware tool result: send mixed content for VL models
+                # Image-aware tool result: tool content must be a string,
+                # so send image in a follow-up user message for VL models
                 if "image_base64" in result:
                     img_b64 = result.pop("image_base64")
                     img_fmt = result.pop("image_format", "png")
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
+                        "content": json.dumps(result, default=str),
+                    })
+                    messages.append({
+                        "role": "user",
                         "content": [
-                            {"type": "text", "text": json.dumps(result, default=str)},
+                            {"type": "text", "text": f"[Image from {tc.function.name}]"},
                             {"type": "image_url", "image_url": {
                                 "url": f"data:image/{img_fmt};base64,{img_b64}",
                             }},

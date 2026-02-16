@@ -586,7 +586,7 @@ class ContigToolkit:
             val = 0.65 + 0.3 * ((i * 5) % 11) / 10.0
             bin_color_map[bn] = colorsys.hsv_to_rgb(hue, sat, val)
 
-        fig, ax = plt.subplots(figsize=(5, 5))
+        fig, ax = plt.subplots(figsize=(4, 4))
 
         # Background: unbinned contigs as gray dots
         unbinned = [c for c in nearby if c.community is None]
@@ -594,7 +594,8 @@ class ContigToolkit:
             ax.scatter(
                 [c.landscape_x for c in unbinned],
                 [c.landscape_y for c in unbinned],
-                c="#CCCCCC", s=6, alpha=0.4, zorder=1, label=f"unbinned ({len(unbinned)})",
+                c="#CCCCCC", s=4, alpha=0.3, zorder=1, rasterized=True,
+                label=f"unbinned ({len(unbinned)})",
             )
 
         # Colored points per bin
@@ -604,7 +605,7 @@ class ContigToolkit:
             ax.scatter(
                 [c.landscape_x for c in members],
                 [c.landscape_y for c in members],
-                c=[bin_color_map[bn]], s=15, alpha=0.7, zorder=2,
+                c=[bin_color_map[bn]], s=10, alpha=0.6, zorder=2, rasterized=True,
                 label=f"{display} ({len(members)})",
             )
 
@@ -612,14 +613,14 @@ class ContigToolkit:
         if target_type == "contig":
             c = self.identities[target]
             ax.scatter([c.landscape_x], [c.landscape_y],
-                       marker="*", c="red", s=200, zorder=4, edgecolors="black",
+                       marker="*", c="red", s=150, zorder=4, edgecolors="black",
                        linewidths=0.5, label=target)
         else:
             for name in highlight_names:
                 c = self.identities.get(name)
                 if c and (c.landscape_x != 0.0 or c.landscape_y != 0.0):
                     ax.scatter([c.landscape_x], [c.landscape_y],
-                               marker="*", c="red", s=80, zorder=4,
+                               marker="*", c="red", s=60, zorder=4,
                                edgecolors="black", linewidths=0.3)
 
         ax.set_xlim(cx - radius, cx + radius)
@@ -630,7 +631,7 @@ class ContigToolkit:
         ax.legend(loc="upper right", fontsize=6, markerscale=0.7)
 
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+        fig.savefig(buf, format="png", dpi=72, bbox_inches="tight")
         plt.close(fig)
         buf.seek(0)
 
