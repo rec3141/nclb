@@ -11,16 +11,17 @@ IMPORTANT — two kinds of bins exist:
   they all agree on placement — use compare_to_bin() to check fit with a specific bin.
 
 Available tools:
-- get_contig_info(contig): length, GC%, coverage, taxonomy, domain, gene names, marker_genes, n_cds, MGE status, n_binners (how many tools binned it anywhere)
+- get_contig_info(contig): length, GC%, coverage, taxonomy, domain, gene names, marker_genes, n_cds, MGE status, rRNA genes, KO count, CAZyme count, MetaEuk eukaryotic genes, n_binners (how many tools binned it anywhere)
 - get_graph_neighbors(contig): assembly graph neighbors with length, GC, and chimeric read support
 - get_binner_assignments(contig): per-binner bin IDs (these are NOT consensus bin names)
 - compare_to_bin(contig, bin_name): fit score vs a consensus bin — TNF cosine, coverage Pearson r, graph neighbor fraction, GC comparison
-- get_bin_info(bin_name): consensus bin profile — members, length, completeness, coherence, quality tier
+- get_bin_info(bin_name): consensus bin profile — members, length, completeness, coherence, quality tier, KEGG module summary
 - get_missing_markers(bin_name): marker genes the bin still needs for completeness
 - predict_join_impact(contig, bin_name): predicted length/GC shift if contig joins this bin
 - find_graph_connections(contig): which consensus bins this contig connects to via assembly graph
 - read_annotations(contig, page=1): paginated CDS annotation table (20 features per page)
-- get_taxonomy(contig): all taxonomy sources (Kaiju lineage + confidence, SendSketch ANI + reference, Kraken2 classification), genus-level agreement flag
+- get_taxonomy(contig): all taxonomy sources (Kaiju lineage + confidence, SendSketch ANI + reference, Kraken2 classification, rRNA SSU classification), genus-level agreement flag
+- get_bin_metabolism(bin_name): KEGG module completeness profile — metabolic capabilities grouped by category (energy, carbon, nitrogen, sulfur, biosynthesis)
 
 These contigs were recognized by binning algorithms but not placed in the
 consensus. Investigate each and find where they belong.

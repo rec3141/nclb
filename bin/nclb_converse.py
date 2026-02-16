@@ -81,6 +81,14 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         n_cds = result.get("n_cds", 0)
         if n_cds:
             parts.append(f"{n_cds} CDS")
+        if result.get("rrna"):
+            parts.append(f"rRNA:{','.join(result['rrna'])}")
+        if result.get("n_ko"):
+            parts.append(f"{result['n_ko']} KO")
+        if result.get("n_cazymes"):
+            parts.append(f"{result['n_cazymes']} CAZy")
+        if result.get("n_euk_genes"):
+            parts.append(f"{result['n_euk_genes']} euk_genes")
         parts.append(f"n_binners={result.get('n_binners', 0)}")
         return ", ".join(parts)
 
@@ -150,6 +158,11 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         if lineage and ";" in lineage:
             lineage = lineage.split(";")[-1].strip()
         return f"{n} sources, agree={agree}, {lineage}"
+
+    if tool_name == "get_bin_metabolism":
+        n = result.get("n_modules", 0)
+        n_complete = result.get("n_complete", 0)
+        return f"{n} modules ({n_complete} >=75% complete)"
 
     # Fallback
     return json.dumps(result, default=str)[:120]
@@ -604,6 +617,12 @@ def main():
     # Bakta full-db annotation (separate from Prokka annotation dir)
     bakta_path = results / "annotation_bakta" / "annotation.tsv"
 
+    # rRNA, metabolism, MetaEuk, KEGG modules
+    rrna_path = results / "taxonomy" / "rrna" / "rrna_contigs.tsv"
+    metabolism_path = results / "metabolism" / "merged" / "merged_annotations.tsv"
+    metaeuk_gff_path = results / "eukaryotic" / "metaeuk" / "metaeuk.gff"
+    kegg_modules_path = results / "metabolism" / "modules" / "module_completeness.tsv"
+
     identities, communities = build_identities(
         tnf_path=assembly_dir / "tnf.tsv",
         depths_path=mapping_dir / "depths.txt",
@@ -628,6 +647,10 @@ def main():
         archaea_scg_path=archaea_scg if archaea_scg.exists() else None,
         eukaryotic_path=eukaryotic_path if eukaryotic_path.exists() else None,
         bakta_tsv_path=bakta_path if bakta_path.exists() else None,
+        rrna_path=rrna_path if rrna_path.exists() else None,
+        metabolism_path=metabolism_path if metabolism_path.exists() else None,
+        metaeuk_gff_path=metaeuk_gff_path if metaeuk_gff_path.exists() else None,
+        kegg_modules_path=kegg_modules_path if kegg_modules_path.exists() else None,
     )
     gfa_adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
 
@@ -683,6 +706,15 @@ def main():
     n_org = sum(1 for c in identities.values() if c.domain_class == "organellar")
     if n_euk or n_org:
         log(f"[INFO] Domain classification: {n_euk} eukaryotic, {n_org} organellar contigs")
+
+    # Log new data source stats
+    n_rrna = sum(1 for c in identities.values() if c.n_rrna_genes > 0)
+    n_ko = sum(1 for c in identities.values() if c.n_ko > 0)
+    n_euk_genes = sum(1 for c in identities.values() if c.n_euk_genes > 0)
+    n_kegg_bins = sum(1 for c in communities.values() if c.kegg_modules)
+    if n_rrna or n_ko or n_euk_genes or n_kegg_bins:
+        log(f"[INFO] New data: rRNA={n_rrna} contigs, KO={n_ko} contigs, "
+            f"MetaEuk={n_euk_genes} contigs, KEGG modules={n_kegg_bins} bins")
 
     # Seed additional communities from binner agreement
     from nclb.identity import seed_communities_from_binner_agreement

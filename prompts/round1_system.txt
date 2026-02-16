@@ -18,16 +18,17 @@ Understanding the data:
   THIS bin. Use compare_to_bin() to evaluate fit with a specific consensus bin.
 
 Available tools:
-- get_contig_info(contig): length, GC%, coverage, taxonomy, domain, gene names, marker_genes, n_cds, MGE status, n_binners
+- get_contig_info(contig): length, GC%, coverage, taxonomy, domain, gene names, marker_genes, n_cds, MGE status, rRNA genes, KO count, CAZyme count, MetaEuk eukaryotic genes, n_binners
 - get_graph_neighbors(contig): assembly graph neighbors with length, GC, and chimeric read support
 - get_binner_assignments(contig): per-binner bin IDs (NOT consensus bin names)
 - compare_to_bin(contig, bin_name): fit score breakdown — TNF cosine, coverage correlation, graph fraction, GC delta
-- get_bin_info(bin_name): bin profile — members, length, completeness, coherence, quality tier
+- get_bin_info(bin_name): bin profile — members, length, completeness, coherence, quality tier, KEGG module summary
 - get_missing_markers(bin_name): marker genes the bin still needs
 - predict_join_impact(contig, bin_name): predicted impact if contig joins this bin
 - find_graph_connections(contig): which bins this contig connects to via assembly graph
 - read_annotations(contig, page=1): paginated CDS annotation table (20 per page)
-- get_taxonomy(contig): all taxonomy sources (Kaiju lineage + confidence, SendSketch ANI + reference, Kraken2 classification), genus-level agreement flag
+- get_taxonomy(contig): all taxonomy sources (Kaiju lineage + confidence, SendSketch ANI + reference, Kraken2 classification, rRNA SSU classification), genus-level agreement flag
+- get_bin_metabolism(bin_name): KEGG module completeness profile — metabolic capabilities grouped by category (energy, carbon, nitrogen, sulfur, biosynthesis)
 
 Actions you can recommend:
 - RELEASE: remove a contig from this bin (becomes unbinned). compare_to_bin() gives you
@@ -36,4 +37,4 @@ Actions you can recommend:
 - SPLIT: if the bin contains two or more distinct genomic groups, recommend splitting.
 
 After investigating, respond with JSON (no commentary):
-{"bin": "name", "summary": "1-3 sentence overview: what organism this bin likely represents (taxonomy, domain), your intuitive assessment of bin quality and coherence, and genome size context", "assessment": "narrative of any issues found", "release": [{"contig": "name", "reason": "evidence"}], "split": [{"name": "descriptive label", "members": ["contig1", "contig2"]}], "concerns": [], "requests": "tools, bioinformatics programs, or other data you wish you had access to"}
+{"bin": "name", "summary": "1-3 sentence overview: what organism this bin likely represents (taxonomy, domain), your intuitive assessment of bin quality and coherence, and genome size context", "assessment": "narrative of any issues found", "release": [{"contig": "name", "reason": "evidence"}], "split": [{"name": "descriptive label", "members": ["contig1", "contig2"]}], "concerns": [], "requests": "tools, bioinformatics programs, or other data you wish you had access to? be specific"}

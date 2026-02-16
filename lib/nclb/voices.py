@@ -170,6 +170,19 @@ class ContigToolkit:
             d["domain_conf"] = c.domain_confidence
         if c.organellar_subtype:
             d["organellar"] = c.organellar_subtype
+        # rRNA
+        if c.rrna_types:
+            d["rrna"] = c.rrna_types
+        if c.best_ssu_identity > 0:
+            d["best_ssu"] = f"{c.best_ssu_taxonomy} ({c.best_ssu_identity:.1f}%)"
+        # Metabolism
+        if c.n_ko > 0:
+            d["n_ko"] = c.n_ko
+        if c.n_cazymes > 0:
+            d["n_cazymes"] = c.n_cazymes
+        # MetaEuk
+        if c.n_euk_genes > 0:
+            d["n_euk_genes"] = c.n_euk_genes
         return self._prune(d)
 
     def get_graph_neighbors(self, contig_name: str) -> dict:
@@ -288,6 +301,13 @@ class ContigToolkit:
         }
         if comm.completeness == 0 and comm.total_size < 500000:
             d["note"] = "below SCG detection threshold"
+        # KEGG module summary
+        if comm.kegg_modules:
+            complete_modules = [k for k, v in comm.kegg_modules.items() if v >= 0.5]
+            d["n_kegg_modules"] = len(complete_modules)
+            top = sorted(comm.kegg_modules.items(), key=lambda x: -x[1])[:5]
+            if top:
+                d["top_pathways"] = [f"{k} ({v:.0%})" for k, v in top]
         return self._prune(d)
 
     def get_missing_markers(self, bin_name: str) -> dict:
@@ -392,6 +412,50 @@ class ContigToolkit:
             "features": features[start:start + page_size],
         }
 
+    def get_bin_metabolism(self, bin_name: str) -> dict:
+        """KEGG module completeness profile for a bin."""
+        bin_name = self._resolve(bin_name)
+        comm = self.communities.get(bin_name)
+        if not comm:
+            return {"error": f"Unknown bin: {bin_name}"}
+        if not comm.kegg_modules:
+            return {"bin": self._display(bin_name), "modules": {}, "n_modules": 0}
+
+        # Group modules by category (infer from module name keywords)
+        categories = {
+            "energy": [], "carbon": [], "nitrogen": [], "sulfur": [],
+            "biosynthesis": [], "degradation": [], "transport": [],
+            "other": [],
+        }
+        for mod_name, completeness in sorted(comm.kegg_modules.items(), key=lambda x: -x[1]):
+            name_lower = mod_name.lower()
+            if any(k in name_lower for k in ["oxidoreductase", "atp", "electron", "complex", "hydrogenase", "fermentation"]):
+                categories["energy"].append({"module": mod_name, "completeness": round(completeness, 3)})
+            elif any(k in name_lower for k in ["glycolysis", "gluconeogenesis", "tca", "citrate", "pentose", "calvin", "carbon", "methano", "catechol", "ethanol", "lactate", "formaldehyde", "3-hydroxypropionate", "wood-ljungdahl"]):
+                categories["carbon"].append({"module": mod_name, "completeness": round(completeness, 3)})
+            elif any(k in name_lower for k in ["nitr", "anammox", "urea"]):
+                categories["nitrogen"].append({"module": mod_name, "completeness": round(completeness, 3)})
+            elif any(k in name_lower for k in ["sulf", "thiosulfate", "sox", "dsr"]):
+                categories["sulfur"].append({"module": mod_name, "completeness": round(completeness, 3)})
+            elif any(k in name_lower for k in ["biosynthesis", "proline", "valine", "pantothenate", "cobalamin", "riboflavin", "tetrahydrofolate", "thiamine", "nad", "biotin", "coa"]):
+                categories["biosynthesis"].append({"module": mod_name, "completeness": round(completeness, 3)})
+            elif any(k in name_lower for k in ["degradation", "cleavage", "benzene"]):
+                categories["degradation"].append({"module": mod_name, "completeness": round(completeness, 3)})
+            elif any(k in name_lower for k in ["transport", "abc"]):
+                categories["transport"].append({"module": mod_name, "completeness": round(completeness, 3)})
+            else:
+                categories["other"].append({"module": mod_name, "completeness": round(completeness, 3)})
+
+        # Remove empty categories
+        categories = {k: v for k, v in categories.items() if v}
+
+        return {
+            "bin": self._display(bin_name),
+            "n_modules": len(comm.kegg_modules),
+            "n_complete": sum(1 for v in comm.kegg_modules.values() if v >= 0.75),
+            "categories": categories,
+        }
+
     def get_taxonomy(self, contig_name: str) -> dict:
         """All taxonomy sources for a contig."""
         c = self.identities.get(contig_name)
@@ -437,6 +501,7 @@ class ContigToolkit:
             "find_graph_connections": self.find_graph_connections,
             "read_annotations": self.read_annotations,
             "get_taxonomy": self.get_taxonomy,
+            "get_bin_metabolism": self.get_bin_metabolism,
         }
 
         fn = dispatch_map.get(tool_name)
@@ -460,7 +525,7 @@ class ContigToolkit:
 CONTIG_TOOLS_ANTHROPIC = [
     {
         "name": "get_contig_info",
-        "description": "Returns contig metadata: length, GC%, coverage, taxonomy, domain, gene names, marker genes, MGE status, consensus bin assignment, n_binners (how many individual tools binned it anywhere — not specific to any consensus bin).",
+        "description": "Returns contig metadata: length, GC%, coverage, taxonomy, domain, gene names, marker genes, MGE status, rRNA genes, KO count, CAZyme count, MetaEuk eukaryotic genes, consensus bin assignment, n_binners (how many individual tools binned it anywhere — not specific to any consensus bin).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -505,7 +570,7 @@ CONTIG_TOOLS_ANTHROPIC = [
     },
     {
         "name": "get_bin_info",
-        "description": "Returns bin profile: members, total length, completeness, coverage, coherence metrics, quality tier.",
+        "description": "Returns bin profile: members, total length, completeness, coverage, coherence metrics, quality tier, KEGG module summary.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -562,13 +627,24 @@ CONTIG_TOOLS_ANTHROPIC = [
     },
     {
         "name": "get_taxonomy",
-        "description": "Returns taxonomy classifications from all available sources (Kaiju, SendSketch, Kraken2). Shows lineage, confidence metrics, and whether sources agree at genus level.",
+        "description": "Returns taxonomy classifications from all available sources (Kaiju, SendSketch, Kraken2, rRNA SSU). Shows lineage, confidence metrics, and whether sources agree at genus level.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "contig_name": {"type": "string", "description": "Contig name"},
             },
             "required": ["contig_name"],
+        },
+    },
+    {
+        "name": "get_bin_metabolism",
+        "description": "Returns KEGG module completeness profile for a bin — metabolic capabilities grouped by category (energy, carbon, nitrogen, sulfur, biosynthesis, degradation, transport).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "bin_name": {"type": "string", "description": "Name of the bin"},
+            },
+            "required": ["bin_name"],
         },
     },
 ]

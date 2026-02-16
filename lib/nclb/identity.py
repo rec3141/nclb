@@ -93,6 +93,19 @@ class ContigIdentity:
     domain_confidence: str = "low"            # high|medium|low
     organellar_subtype: Optional[str] = None  # plastid|mitochondrion|None
 
+    # rRNA genes (from barrnap + vsearch SILVA)
+    n_rrna_genes: int = 0
+    rrna_types: list[str] = field(default_factory=list)  # e.g. ["16S_rRNA", "23S_rRNA"]
+    best_ssu_taxonomy: str = ""
+    best_ssu_identity: float = 0.0
+
+    # Metabolism (per-contig summary counts)
+    n_ko: int = 0        # number of KO-annotated proteins
+    n_cazymes: int = 0   # number of CAZyme-annotated proteins
+
+    # Eukaryotic gene predictions (MetaEuk)
+    n_euk_genes: int = 0  # MetaEuk multi-exon gene count
+
     # Landscape position (from UMAP embedding)
     landscape_x: float = 0.0                          # UMAP x coordinate
     landscape_y: float = 0.0                          # UMAP y coordinate
@@ -137,6 +150,9 @@ class CommunityProfile:
     # Gene inventory
     marker_gene_inventory: list[str] = field(default_factory=list)
     missing_markers: list[str] = field(default_factory=list)
+
+    # KEGG module completeness (loaded separately for bins)
+    kegg_modules: dict[str, float] = field(default_factory=dict)  # module_id → completeness
 
     # Quality classification
     quality_tier: str = "low"                           # low|fair|good|high|excellent
@@ -1028,6 +1044,141 @@ def load_eukaryotic_classification(path: Path) -> dict[str, dict]:
     return results
 
 
+def load_rrna_contigs(path: Path) -> dict[str, dict]:
+    """Load rRNA per-contig summary from rrna_contigs.tsv.
+
+    Format: contig_id  n_rrna_genes  rrna_types  kingdoms  best_ssu_taxonomy
+            best_ssu_identity  best_lsu_taxonomy  best_lsu_identity
+    Returns {contig_id: {n_rrna_genes, rrna_types, best_ssu_taxonomy, best_ssu_identity}}.
+    """
+    results = {}
+    with open(path) as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            contig = row["contig_id"]
+            rrna_types = [t.strip() for t in row.get("rrna_types", "").split(",") if t.strip()]
+            ssu_id = 0.0
+            try:
+                ssu_id = float(row.get("best_ssu_identity", 0))
+            except (ValueError, TypeError):
+                pass
+            results[contig] = {
+                "n_rrna_genes": int(row.get("n_rrna_genes", 0)),
+                "rrna_types": rrna_types,
+                "best_ssu_taxonomy": row.get("best_ssu_taxonomy", "").strip(),
+                "best_ssu_identity": ssu_id,
+            }
+    return results
+
+
+def load_metabolism_summary(
+    path: Path,
+    bakta_tsv_path: Optional[Path] = None,
+) -> dict[str, dict]:
+    """Load merged metabolism annotations and aggregate per-contig counts.
+
+    Format: protein_id  contig_id  KO  COG_category  GOs  EC  KEGG_Pathway  PFAMs  CAZy  description
+
+    The contig_id column may contain a Bakta locus tag prefix (e.g. "EFLNPF")
+    instead of actual contig names. When bakta_tsv_path is provided, we build
+    a protein_id → contig mapping from the Bakta annotation file.
+
+    Returns {contig_id: {n_ko, n_cazymes}}.
+    """
+    # Build protein_id → contig mapping from Bakta TSV if available
+    protein_to_contig: dict[str, str] = {}
+    if bakta_tsv_path and bakta_tsv_path.exists():
+        with open(bakta_tsv_path) as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) >= 6:
+                    contig = parts[0]
+                    locus_tag = parts[5]
+                    if locus_tag:
+                        protein_to_contig[locus_tag] = contig
+
+    contig_ko: dict[str, int] = {}
+    contig_cazy: dict[str, int] = {}
+
+    with open(path) as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            protein_id = row.get("protein_id", "").strip()
+            # Map protein_id to contig via Bakta if available
+            contig = protein_to_contig.get(protein_id, "")
+            if not contig:
+                contig = row.get("contig_id", "").strip()
+            if not contig:
+                continue
+            ko = row.get("KO", "").strip()
+            if ko:
+                contig_ko[contig] = contig_ko.get(contig, 0) + 1
+            cazy = row.get("CAZy", "").strip()
+            if cazy:
+                contig_cazy[contig] = contig_cazy.get(contig, 0) + 1
+
+    results = {}
+    for contig in set(contig_ko) | set(contig_cazy):
+        results[contig] = {
+            "n_ko": contig_ko.get(contig, 0),
+            "n_cazymes": contig_cazy.get(contig, 0),
+        }
+    return results
+
+
+def load_metaeuk_genes(path: Path) -> dict[str, int]:
+    """Count MetaEuk gene predictions per contig from metaeuk.gff.
+
+    Only counts 'gene' features (not mRNA/exon/CDS sub-features).
+    Returns {contig_id: n_genes}.
+    """
+    counts: dict[str, int] = {}
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            if parts[2] == "gene":
+                contig = parts[0]
+                counts[contig] = counts.get(contig, 0) + 1
+    return counts
+
+
+def load_kegg_modules(path: Path) -> dict[str, dict[str, float]]:
+    """Load KEGG module completeness matrix.
+
+    Format: mag_id  M00001:Name  M00002:Name  ...
+    Rows are MAGs, columns are module completeness values (0-1).
+    Returns {bin_id: {module_id_with_name: completeness}} (only modules > 0).
+    """
+    results = {}
+    with open(path) as f:
+        header = f.readline().rstrip("\n").split("\t")
+        module_names = header[1:]  # skip mag_id column
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 2:
+                continue
+            bin_id = parts[0]
+            modules = {}
+            for i, val_str in enumerate(parts[1:]):
+                if i >= len(module_names):
+                    break
+                try:
+                    val = float(val_str)
+                except (ValueError, TypeError):
+                    continue
+                if val > 0:
+                    modules[module_names[i]] = val
+            if modules:
+                results[bin_id] = modules
+    return results
+
+
 def load_bakta_annotations(path: Path) -> dict[str, list[dict]]:
     """Load Bakta full-db CDS annotation TSV.
 
@@ -1135,6 +1286,10 @@ def build_identities(
     archaea_scg_path: Optional[Path] = None,
     eukaryotic_path: Optional[Path] = None,
     bakta_tsv_path: Optional[Path] = None,
+    rrna_path: Optional[Path] = None,
+    metabolism_path: Optional[Path] = None,
+    metaeuk_gff_path: Optional[Path] = None,
+    kegg_modules_path: Optional[Path] = None,
 ) -> tuple[dict[str, ContigIdentity], dict[str, CommunityProfile]]:
     """Build identity cards for all contigs and community profiles.
 
@@ -1194,6 +1349,12 @@ def build_identities(
     if bakta_tsv_path and bakta_tsv_path.exists():
         bakta_annot = load_bakta_annotations(bakta_tsv_path)
         bakta_gene_data = _bakta_gene_summary(bakta_annot, contig_lengths)
+
+    # Load rRNA, metabolism, MetaEuk, KEGG modules
+    rrna_data = load_rrna_contigs(rrna_path) if rrna_path else {}
+    metab_data = load_metabolism_summary(metabolism_path, bakta_tsv_path=bakta_tsv_path) if metabolism_path else {}
+    metaeuk_data = load_metaeuk_genes(metaeuk_gff_path) if metaeuk_gff_path else {}
+    kegg_data = load_kegg_modules(kegg_modules_path) if kegg_modules_path else {}
 
     # Build identity cards for every contig that has TNF data
     identities: dict[str, ContigIdentity] = {}
@@ -1331,6 +1492,31 @@ def build_identities(
             identity.domain_confidence = euk["confidence"]
             identity.organellar_subtype = euk["organellar_subtype"]
 
+        # Annotate with rRNA data
+        rrna = rrna_data.get(name)
+        if rrna:
+            identity.n_rrna_genes = rrna["n_rrna_genes"]
+            identity.rrna_types = rrna["rrna_types"]
+            identity.best_ssu_taxonomy = rrna["best_ssu_taxonomy"]
+            identity.best_ssu_identity = rrna["best_ssu_identity"]
+            # Add rRNA as a taxonomy source
+            if rrna["best_ssu_taxonomy"]:
+                identity.taxonomy["rrna_ssu"] = {
+                    "lineage": rrna["best_ssu_taxonomy"],
+                    "identity": rrna["best_ssu_identity"],
+                }
+
+        # Annotate with metabolism summary
+        metab = metab_data.get(name)
+        if metab:
+            identity.n_ko = metab["n_ko"]
+            identity.n_cazymes = metab["n_cazymes"]
+
+        # Annotate with MetaEuk gene count
+        euk_genes = metaeuk_data.get(name)
+        if euk_genes:
+            identity.n_euk_genes = euk_genes
+
         identities[name] = identity
 
     # Build community profiles
@@ -1369,6 +1555,9 @@ def build_identities(
         marker_gene_inventory = sorted(inventory)
         missing_markers = sorted(full_scg_set - inventory) if full_scg_set else []
 
+        # KEGG module completeness for this bin
+        bin_modules = kegg_data.get(bin_name, {})
+
         profile = CommunityProfile(
             name=bin_name,
             source_binner=summary["source"],
@@ -1383,6 +1572,7 @@ def build_identities(
             redundancy=summary["redundancy"],
             contamination=checkm2.get("contamination", 0.0),
             checkm2_completeness=checkm2.get("completeness", 0.0),
+            kegg_modules=bin_modules,
             quality_tier=quality_tier,
             marker_gene_inventory=marker_gene_inventory,
             missing_markers=missing_markers,

@@ -171,6 +171,12 @@ def main():
         if gffs:
             prokka_gff_path = gffs[-1]
 
+    # rRNA, metabolism, MetaEuk, KEGG modules
+    rrna_path = results / "taxonomy" / "rrna" / "rrna_contigs.tsv"
+    metabolism_path = results / "metabolism" / "merged" / "merged_annotations.tsv"
+    metaeuk_gff_path = results / "eukaryotic" / "metaeuk" / "metaeuk.gff"
+    kegg_modules_path = results / "metabolism" / "modules" / "module_completeness.tsv"
+
     identities, communities = build_identities(
         tnf_path=assembly_dir / "tnf.tsv",
         depths_path=mapping_dir / "depths.txt",
@@ -188,6 +194,10 @@ def main():
         genomic_island_path=island_path if island_path.exists() else None,
         macsyfinder_path=msf_path if msf_path.exists() else None,
         prokka_gff_path=prokka_gff_path,
+        rrna_path=rrna_path if rrna_path.exists() else None,
+        metabolism_path=metabolism_path if metabolism_path.exists() else None,
+        metaeuk_gff_path=metaeuk_gff_path if metaeuk_gff_path.exists() else None,
+        kegg_modules_path=kegg_modules_path if kegg_modules_path.exists() else None,
     )
     adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
 
