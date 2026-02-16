@@ -93,9 +93,9 @@ def serialize_identity(c) -> dict:
         d["defense_systems"] = c.defense_systems
     # Landscape position
     if c.landscape_x != 0.0 or c.landscape_y != 0.0:
-        d["position"] = [round(c.landscape_x, 4), round(c.landscape_y, 4)]
+        d["umap_position"] = [round(c.landscape_x, 4), round(c.landscape_y, 4)]
         if c.landscape_cluster >= 0:
-            d["landscape_cluster"] = c.landscape_cluster
+            d["umap_cluster"] = c.landscape_cluster
     return d
 
 
@@ -345,7 +345,7 @@ def main():
     for comm_name, comm in communities.items():
         members = [identities[n] for n in comm.members if n in identities]
 
-        comm.tnf_coherence = tnf_coherence(members)
+        comm.tnf_coherence, comm.tnf_sim_stdev = tnf_coherence(members)
         comm.coverage_correlation = coverage_coherence(members)
         comm.graph_connectivity = graph_connectivity(comm.members, adjacency)
 

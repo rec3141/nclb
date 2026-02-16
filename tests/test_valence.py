@@ -38,7 +38,7 @@ print("=" * 70)
 # Compute metrics for all communities, sorted by completeness
 for comm in sorted(communities.values(), key=lambda c: -c.completeness)[:10]:
     members = [identities[n] for n in comm.members if n in identities]
-    comm.tnf_coherence = tnf_coherence(members)
+    comm.tnf_coherence, comm.tnf_sim_stdev = tnf_coherence(members)
     comm.coverage_correlation = coverage_coherence(members)
     comm.graph_connectivity = graph_connectivity(comm.members, adjacency)
 

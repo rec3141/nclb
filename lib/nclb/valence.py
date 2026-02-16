@@ -170,10 +170,13 @@ def community_metrics(
 
 def tnf_coherence(
     members: list[ContigIdentity],
-) -> float:
-    """Mean cosine similarity of each member's TNF to the centroid."""
+) -> tuple[float, float]:
+    """Mean and stdev of cosine similarity of each member's TNF to the centroid.
+
+    Returns (mean_similarity, stdev_similarity).
+    """
     if len(members) < 2:
-        return 1.0
+        return 1.0, 0.0
 
     tnf_matrix = np.array([c.tnf for c in members])
     centroid = tnf_matrix.mean(axis=0)
@@ -183,7 +186,7 @@ def tnf_coherence(
         sim = 1.0 - cosine_distance(c.tnf, centroid)
         similarities.append(sim)
 
-    return float(np.mean(similarities))
+    return float(np.mean(similarities)), float(np.std(similarities))
 
 
 def coverage_coherence(

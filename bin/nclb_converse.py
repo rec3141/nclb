@@ -38,87 +38,18 @@ from nclb.valence import contig_fit_score, tnf_coherence, coverage_coherence
 # System prompts (brief — the LLM discovers context through tools)
 # ---------------------------------------------------------------------------
 
-ROUND1_SYSTEM = """You examine metagenome-assembled genome bins for quality issues.
+_PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
-Each consensus bin contains contigs placed together by DAS Tool consensus across multiple
-binning algorithms. You receive ALL members with their pre-computed fit scores. Use your
-judgment to decide which contigs to investigate and whether any should be released.
 
-Two kinds of bins exist:
-- CONSENSUS BINS (e.g. "Fierce Arrow"): the bins you are evaluating.
-- PER-BINNER BIN IDs (e.g. "semibin_022", "metabat_014"): raw bin IDs from individual
-  binning tools. These are NOT consensus bins. Each binner groups contigs independently.
+def _load_prompt(name: str) -> str:
+    """Load a system prompt from the prompts/ directory."""
+    path = _PROMPT_DIR / name
+    return path.read_text().strip()
 
-Understanding the data:
-- Fit scores are pre-computed from TNF composition, coverage correlation, graph links,
-  binner recognition, and marker gene contribution. Scores range from -1 to +1.
-- When a signal has insufficient data (e.g. no coverage variation, no graph edges),
-  its weight is redistributed to available signals. A null cov_pearson_r or
-  graph_neighbor_fraction in compare_to_bin means that signal was unavailable, not zero.
-- n_binners (shown as X/N) counts how many of the N tools assigned this contig to SOME bin — not to
-  THIS bin. Use compare_to_bin() to evaluate fit with a specific consensus bin.
-- has_graph_data=false means get_graph_neighbors/find_graph_connections won't have data.
 
-Available tools:
-- get_contig_info(contig): size, GC%, coverage, taxonomy, domain, gene names, marker_genes, n_cds, MGE status, n_binners
-- get_graph_neighbors(contig): assembly graph neighbors with their bin assignments
-- get_binner_assignments(contig): per-binner bin IDs (NOT consensus bin names)
-- compare_to_bin(contig, bin_name): fit score breakdown — TNF cosine, coverage correlation, graph fraction, GC delta
-- get_bin_info(bin_name): bin profile — members, size, completeness, coherence, quality tier
-- get_missing_markers(bin_name): marker genes the bin still needs
-- predict_join_impact(contig, bin_name): predicted impact if contig joins this bin
-- find_graph_connections(contig): which bins this contig connects to via assembly graph
-- read_annotations(contig, page=1): paginated CDS annotation table (20 per page)
-
-Actions you can recommend:
-- RELEASE: remove a contig from this bin (becomes unbinned). Release when evidence
-  shows misplacement: different taxonomy/domain, divergent GC or coverage, low fit score.
-- SPLIT: if the bin contains two or more distinct genomic groups, recommend splitting.
-
-After investigating, respond with JSON (no commentary):
-{"bin": "name", "assessment": "narrative", "release": [{"contig": "name", "reason": "evidence"}], "split": [{"name": "descriptive label", "members": ["contig1", "contig2"]}], "concerns": []}"""
-
-ROUND2_SYSTEM = """You evaluate unbinned contigs seeking consensus bin placement.
-
-You have tools to investigate each contig's identity, graph connections,
-and compatibility with candidate consensus bins. Call them to build evidence.
-
-IMPORTANT — two kinds of bins exist:
-- CONSENSUS BINS (e.g. "Fierce Arrow"): the bins you can place contigs into.
-- PER-BINNER BIN IDs (e.g. "semibin_022"): raw IDs from individual tools. Each binner
-  groups contigs independently, so per-binner IDs do NOT correspond to consensus bins.
-- n_binners counts how many tools assigned the contig to SOME bin. It does NOT mean
-  they all agree on placement — use compare_to_bin() to check fit with a specific bin.
-
-Available tools:
-- get_contig_info(contig): size, GC%, coverage, taxonomy, domain, gene names, marker_genes, n_cds, MGE status, n_binners (how many tools binned it anywhere)
-- get_graph_neighbors(contig): assembly graph neighbors with their consensus bin assignments
-- get_binner_assignments(contig): per-binner bin IDs (these are NOT consensus bin names)
-- compare_to_bin(contig, bin_name): fit score vs a consensus bin — TNF cosine, coverage Pearson r, graph neighbor fraction, GC comparison
-- get_bin_info(bin_name): consensus bin profile — members, size, completeness, coherence, quality tier
-- get_missing_markers(bin_name): marker genes the bin still needs for completeness
-- predict_join_impact(contig, bin_name): predicted size/GC shift if contig joins this bin
-- find_graph_connections(contig): which consensus bins this contig connects to via assembly graph
-- read_annotations(contig, page=1): paginated CDS annotation table (20 features per page)
-
-These contigs were recognized by binning algorithms but not placed in the
-consensus. Investigate each and find where they belong.
-
-CRITICAL: Only use consensus bin names that appear in your prompt's candidate list or
-that are returned by find_graph_connections() / get_graph_neighbors() tool calls.
-Per-binner IDs like "semibin_074" are NOT valid consensus bin names — never use them.
-Never invent or guess bin names. If no valid bin is found, use "wait".
-
-After investigating, respond with JSON (no commentary):
-{"decisions": [{"contig": "name", "action": "join|wait|wander", "bin": "name_or_null", "evidence": "specific signals", "fit_score": 0.0}]}"""
-
-ROUND3_SYSTEM = """You evaluate candidate new bins formed from unbinned contigs.
-
-Signs of a real genome: TNF coherence >0.9, synchronized coverage across
-samples, reasonable genome size, consistent ancestry.
-
-Respond with JSON (no commentary):
-{"evaluations": [{"cluster_id": 0, "verdict": "accept|reject|uncertain", "reason": "assessment", "suggested_name": "name"}]}"""
+ROUND1_SYSTEM = _load_prompt("round1_system.txt")
+ROUND2_SYSTEM = _load_prompt("round2_system.txt")
+ROUND3_SYSTEM = _load_prompt("round3_system.txt")
 
 
 # ---------------------------------------------------------------------------
@@ -136,18 +67,17 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
             # Show last two ranks of lineage
             lineage = result["ancestry"].split(";")
             parts.append(lineage[-1].strip() if lineage else "?")
-        if result.get("mge_type"):
-            parts.append(result["mge_type"])
-        if result.get("gene_names"):
-            parts.append(f"{len(result['gene_names'])} genes")
-        if result.get("marker_genes"):
-            parts.append(f"{len(result['marker_genes'])} SCGs")
-        if result.get("has_defense_system"):
-            n = len(result.get("defense_systems", []))
-            parts.append(f"{n} defense")
-        if result.get("has_integron"):
+        if result.get("mge"):
+            parts.append(result["mge"])
+        if result.get("genes"):
+            parts.append(f"{len(result['genes'])} genes")
+        if result.get("scgs"):
+            parts.append(f"{len(result['scgs'])} SCGs")
+        if result.get("defense"):
+            parts.append(f"{len(result['defense'])} defense")
+        if result.get("integrons"):
             parts.append("integron")
-        if result.get("has_secretion_system"):
+        if result.get("secretion"):
             parts.append("secretion")
         domain = result.get("domain", "unknown")
         if domain != "unknown":
@@ -164,25 +94,28 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         return f"n_binners={result.get('n_binners', 0)}, {', '.join(assigned) or 'none'}"
 
     if tool_name == "compare_to_bin":
-        cov = result.get('cov_pearson_r')
-        graph = result.get('graph_neighbor_fraction')
+        cov = result.get('cov_r')
+        graph = result.get('graph_frac')
         cov_s = f"{cov:.3f}" if cov is not None else "N/A"
         graph_s = f"{graph:.3f}" if graph is not None else "N/A"
+        gc_z = result.get('gc_z', 0)
+        tnf_z = result.get('tnf_z', 0)
         return (
-            f"fit_score={result.get('fit_score', 0):+.3f}, "
-            f"tnf_cosine={result.get('tnf_cosine_similarity', 0):.3f}, "
-            f"cov_pearson_r={cov_s}, "
-            f"graph_neighbor_frac={graph_s}, "
-            f"GC_delta={result.get('gc_delta', 0):.4f}"
+            f"fit={result.get('fit', 0):+.3f}, "
+            f"tnf_cos={result.get('tnf_cos', 0):.3f}, "
+            f"TNF_z={tnf_z:.2f}, "
+            f"cov_r={cov_s}, "
+            f"graph_frac={graph_s}, "
+            f"GC_z={gc_z:.2f}"
         )
 
     if tool_name == "get_bin_info":
         return (
             f"{result.get('n_members', 0)} members, "
-            f"{result.get('total_size', 0):,}bp, "
-            f"{result.get('completeness', 0):.0f}% complete, "
-            f"{result.get('quality_tier', '?')}, "
-            f"{len(result.get('missing_markers', []))} missing SCGs"
+            f"{result.get('size', 0):,}bp, "
+            f"{result.get('complete', 0):.0f}% complete, "
+            f"{result.get('tier', '?')}, "
+            f"{result.get('n_missing_scg', 0)} missing SCGs"
         )
 
     if tool_name == "get_missing_markers":
@@ -212,6 +145,15 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
             f"page {result.get('page', 1)}/{result.get('total_pages', 1)}, "
             f"{result.get('total_features', 0)} total features"
         )
+
+    if tool_name == "get_taxonomy":
+        n = result.get("n_sources_classified", 0)
+        agree = result.get("genus_agreement", False)
+        lineage = result.get("primary_lineage", "?")
+        # Show last rank of lineage
+        if lineage and ";" in lineage:
+            lineage = lineage.split(";")[-1].strip()
+        return f"{n} sources, agree={agree}, {lineage}"
 
     # Fallback
     return json.dumps(result, default=str)[:120]
@@ -573,7 +515,7 @@ def cluster_voiceless(identities: dict) -> list[dict]:
             "n_members": len(members),
             "total_size": total_size,
             "member_names": [c.name for c in members],
-            "tnf_coherence": float(tnf_coherence(members)),
+            "tnf_coherence": float(tnf_coherence(members)[0]),
             "coverage_correlation": float(coverage_coherence(members)),
             "mean_gc": float(np.mean([c.gc for c in members])),
         })
@@ -660,6 +602,8 @@ def main():
 
     # Taxonomy
     kaiju_path = results / "taxonomy" / "kaiju" / "kaiju_contigs.tsv"
+    sendsketch_path = results / "taxonomy" / "sendsketch" / "sendsketch_contigs.tsv"
+    kraken2_path = results / "taxonomy" / "kraken2" / "kraken2_contigs.tsv"
 
     # Integrons, genomic islands, secretion systems
     integron_path = mge_dir / "integrons" / "integrons.tsv"
@@ -696,6 +640,8 @@ def main():
         plasmid_summary_path=plasmid_path if plasmid_path.exists() else None,
         checkv_quality_path=checkv_path if checkv_path.exists() else None,
         kaiju_taxonomy_path=kaiju_path if kaiju_path.exists() else None,
+        sendsketch_taxonomy_path=sendsketch_path if sendsketch_path.exists() else None,
+        kraken2_taxonomy_path=kraken2_path if kraken2_path.exists() else None,
         integron_path=integron_path if integron_path.exists() else None,
         genomic_island_path=island_path if island_path.exists() else None,
         macsyfinder_path=msf_path if msf_path.exists() else None,
@@ -736,6 +682,15 @@ def main():
 
     log(f"[INFO] Loaded {len(identities):,} contigs, {len(communities)} DAS Tool communities")
 
+    # Log taxonomy source stats
+    tax_counts = {}
+    for c in identities.values():
+        for src in c.taxonomy:
+            tax_counts[src] = tax_counts.get(src, 0) + 1
+    if tax_counts:
+        parts = [f"{src}={n:,}" for src, n in sorted(tax_counts.items())]
+        log(f"[INFO] Taxonomy sources: {', '.join(parts)}")
+
     # Log eukaryotic classification stats
     n_euk = sum(1 for c in identities.values() if c.domain_class == "eukaryotic")
     n_org = sum(1 for c in identities.values() if c.domain_class == "organellar")
@@ -767,7 +722,7 @@ def main():
         """Compute coherence metrics on first access."""
         if comm.tnf_coherence == 0.0 and len(comm.members) > 1:
             members = [identities[n] for n in comm.members if n in identities]
-            comm.tnf_coherence = tnf_coherence(members)
+            comm.tnf_coherence, comm.tnf_sim_stdev = tnf_coherence(members)
             comm.coverage_correlation = coverage_coherence(members)
             comm.graph_connectivity = graph_connectivity(comm.members, adjacency)
 

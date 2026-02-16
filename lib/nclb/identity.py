@@ -36,6 +36,12 @@ class ContigIdentity:
     # Ancestry (filled later if taxonomy available)
     ancestry: Optional[str] = None
 
+    # Multi-source taxonomy (filled by loaders)
+    # e.g. {"kaiju": {"lineage": "...", "fraction": 0.93},
+    #        "sendsketch": {"lineage": "...", "ani": 89.6, "ref_name": "..."},
+    #        "kraken2": {"lineage": "...", "name": "..."}}
+    taxonomy: dict[str, dict] = field(default_factory=dict)
+
     # Gene names from annotation (Prokka/Bakta)
     gene_names: list[str] = field(default_factory=list)
     n_cds: int = 0              # total CDS features (from best annotation source)
@@ -124,6 +130,7 @@ class CommunityProfile:
 
     # Coherence metrics (computed by valence module)
     tnf_coherence: float = 0.0                        # mean cosine to centroid
+    tnf_sim_stdev: float = 0.0                        # stdev of member cosine similarities to centroid
     coverage_correlation: float = 0.0                 # mean pairwise Pearson
     graph_connectivity: float = 0.0                   # fraction of pairs with edges
 
@@ -644,6 +651,62 @@ def load_kaiju_taxonomy(path: Path) -> dict[str, dict]:
     return taxonomy
 
 
+def load_sendsketch_taxonomy(path: Path) -> dict[str, dict]:
+    """Load SendSketch per-contig taxonomy from sendsketch_contigs.tsv.
+
+    Format: contig_id  status  ANI  ref_name  lineage (GTDB)
+    Returns {contig: {"lineage": str, "ani": float, "ref_name": str}}
+    """
+    taxonomy = {}
+    with open(path) as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            if row.get("status") != "C":
+                continue
+            lineage = row.get("lineage", "").strip().rstrip(";")
+            if not lineage or lineage == "Unclassified":
+                continue
+            ani = 0.0
+            try:
+                ani = float(row.get("ANI", 0))
+            except (ValueError, TypeError):
+                pass
+            taxonomy[row["contig_id"]] = {
+                "lineage": lineage,
+                "ani": ani,
+                "ref_name": row.get("ref_name", ""),
+            }
+    return taxonomy
+
+
+def load_kraken2_taxonomy(path: Path) -> dict[str, dict]:
+    """Load Kraken2 per-contig taxonomy from kraken2_contigs.tsv.
+
+    Format: contig_id  status  taxon_id  name  lineage (GTDB)
+    Returns {contig: {"lineage": str, "taxon_id": int, "name": str}}
+    """
+    taxonomy = {}
+    with open(path) as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            if row.get("status") != "C":
+                continue
+            lineage = row.get("lineage", "").strip().rstrip(";")
+            if not lineage or lineage == "Unclassified":
+                continue
+            taxon_id = 0
+            try:
+                taxon_id = int(row.get("taxon_id", 0))
+            except (ValueError, TypeError):
+                pass
+            taxonomy[row["contig_id"]] = {
+                "lineage": lineage,
+                "taxon_id": taxon_id,
+                "name": row.get("name", ""),
+            }
+    return taxonomy
+
+
 def load_checkm2(path: Path) -> dict[str, dict]:
     """Load CheckM2 quality_report.tsv."""
     quality = {}
@@ -1044,6 +1107,8 @@ def build_identities(
     plasmid_summary_path: Optional[Path] = None,
     checkv_quality_path: Optional[Path] = None,
     kaiju_taxonomy_path: Optional[Path] = None,
+    sendsketch_taxonomy_path: Optional[Path] = None,
+    kraken2_taxonomy_path: Optional[Path] = None,
     integron_path: Optional[Path] = None,
     genomic_island_path: Optional[Path] = None,
     macsyfinder_path: Optional[Path] = None,
@@ -1075,6 +1140,8 @@ def build_identities(
 
     # Load taxonomy
     kaiju_data = load_kaiju_taxonomy(kaiju_taxonomy_path) if kaiju_taxonomy_path else {}
+    sendsketch_data = load_sendsketch_taxonomy(sendsketch_taxonomy_path) if sendsketch_taxonomy_path else {}
+    kraken2_data = load_kraken2_taxonomy(kraken2_taxonomy_path) if kraken2_taxonomy_path else {}
 
     # Load integrons, genomic islands, secretion systems
     integron_data = load_integrons(integron_path) if integron_path else {}
@@ -1146,10 +1213,21 @@ def build_identities(
             membership_type=membership_type,
         )
 
-        # Annotate with taxonomy
+        # Annotate with multi-source taxonomy
         kaiju = kaiju_data.get(name)
         if kaiju:
+            identity.taxonomy["kaiju"] = kaiju
             identity.ancestry = kaiju["lineage"]
+        sendsketch = sendsketch_data.get(name)
+        if sendsketch:
+            identity.taxonomy["sendsketch"] = sendsketch
+            if not identity.ancestry:
+                identity.ancestry = sendsketch["lineage"]
+        kraken2 = kraken2_data.get(name)
+        if kraken2:
+            identity.taxonomy["kraken2"] = kraken2
+            if not identity.ancestry:
+                identity.ancestry = kraken2["lineage"]
 
         # Annotate with MGE data
         vir = virus_data.get(name)

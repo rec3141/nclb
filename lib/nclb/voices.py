@@ -86,76 +86,88 @@ class ContigToolkit:
             return None
         return self._to_display.get(name, name)
 
+    @staticmethod
+    def _prune(d: dict) -> dict:
+        """Remove keys whose values are None, False, 0, or empty list/str."""
+        return {k: v for k, v in d.items()
+                if v is not None and v is not False and v != 0 and v != [] and v != ""}
+
     def get_contig_info(self, contig_name: str) -> dict:
         """Full identity card for a contig."""
         c = self.identities.get(contig_name)
         if not c:
             return {"error": f"Unknown contig: {contig_name}"}
-        d = {
+        d: dict = {
             "name": c.name,
             "size": c.size,
             "gc": round(c.gc, 4),
-            "assembly_coverage": round(c.assembly_coverage, 2),
-            "is_circular": c.is_circular,
-            "is_repeat": c.is_repeat,
-            "multiplicity": c.multiplicity,
-            "coverage_per_sample": [round(float(x), 6) for x in c.coverage],
-            "coverage_summary": {
-                "n_samples": len(c.coverage),
-                "n_detected": sum(1 for x in c.coverage if x > 0),
-                "mean_nonzero": round(float(np.mean([x for x in c.coverage if x > 0])), 4) if any(x > 0 for x in c.coverage) else 0.0,
-                "max": round(float(max(c.coverage)), 4),
-            },
-            "has_graph_data": len(c.connections) > 0,
-            "n_graph_neighbors": len(c.connections),
-            "binner_assignments": c.binner_assignments,
+            "cov": round(c.assembly_coverage, 2),
             "n_binners": f"{c.n_binners}/{self.total_binners}",
             "bin": self._display(c.community),
-            "membership_type": c.membership_type,
             "ancestry": c.ancestry,
-            "gene_names": c.gene_names,
-            "marker_genes": c.marker_genes,
+            "n_cds": c.n_cds,
         }
-        # Landscape position (UMAP coordinates + cluster centroid)
+        # Only include if true/non-default
+        if c.is_circular:
+            d["circular"] = True
+        if c.is_repeat:
+            d["repeat"] = True
+            d["multiplicity"] = c.multiplicity
+        if c.gene_names:
+            d["genes"] = c.gene_names
+        if c.marker_genes:
+            d["scgs"] = c.marker_genes
+        if len(c.connections) > 0:
+            d["n_neighbors"] = len(c.connections)
+        # UMAP
         if c.landscape_x != 0.0 or c.landscape_y != 0.0:
-            d["position"] = [round(c.landscape_x, 2), round(c.landscape_y, 2)]
-            d["landscape_cluster"] = c.landscape_cluster if c.landscape_cluster >= 0 else None
+            d["umap_pos"] = [round(c.landscape_x, 2), round(c.landscape_y, 2)]
             if c.landscape_cluster >= 0:
-                d["cluster_centroid"] = [round(c.landscape_cluster_cx, 2),
-                                         round(c.landscape_cluster_cy, 2)]
-        # MGE annotations — always present so LLM sees explicit negatives
-        d["mge_type"] = c.mge_type or None
-        d["is_viral"] = c.is_viral
-        d["virus_score"] = round(c.virus_score, 4) if c.is_viral else None
-        d["virus_hallmarks"] = c.virus_hallmarks if c.is_viral else None
-        d["virus_taxonomy"] = c.virus_taxonomy or None
-        d["is_plasmid"] = c.is_plasmid
-        d["plasmid_score"] = round(c.plasmid_score, 4) if c.is_plasmid else None
-        d["plasmid_hallmarks"] = c.plasmid_hallmarks if c.is_plasmid else None
-        d["conjugation_genes"] = c.conjugation_genes or []
-        d["amr_genes"] = c.amr_genes or []
-        d["is_provirus"] = c.is_provirus
-        d["proviral_length"] = c.proviral_length if c.is_provirus else None
-        d["checkv_quality"] = c.checkv_quality or None
-        d["viral_genes"] = c.viral_genes
-        d["host_genes"] = c.host_genes
-        # HGT / defense — always present
-        d["has_integron"] = c.has_integron
-        d["integrons"] = c.integrons or []
-        d["has_genomic_island"] = c.has_genomic_island
-        d["genomic_islands"] = c.genomic_islands or []
-        d["has_secretion_system"] = c.has_secretion_system
-        d["secretion_systems"] = c.secretion_systems or []
-        d["has_defense_system"] = c.has_defense_system
-        d["defense_systems"] = c.defense_systems or []
-        d["coding_density"] = round(c.coding_density, 4) if c.coding_density else None
-        # Domain classification
-        d["domain"] = c.domain_class
-        d["domain_confidence"] = c.domain_confidence
-        d["organellar_subtype"] = c.organellar_subtype
-        # Annotation summary
-        d["n_cds"] = c.n_cds
-        return d
+                d["umap_cl"] = c.landscape_cluster
+        # MGE — only include positive findings
+        if c.mge_type:
+            d["mge"] = c.mge_type
+        if c.is_viral:
+            d["viral"] = {"score": round(c.virus_score, 4)}
+            if c.virus_hallmarks:
+                d["viral"]["hallmarks"] = c.virus_hallmarks
+            if c.virus_taxonomy:
+                d["viral"]["tax"] = c.virus_taxonomy
+            if c.checkv_quality:
+                d["viral"]["checkv"] = c.checkv_quality
+            if c.viral_genes:
+                d["viral"]["v_genes"] = c.viral_genes
+            if c.host_genes:
+                d["viral"]["h_genes"] = c.host_genes
+        if c.is_plasmid:
+            d["plasmid"] = {"score": round(c.plasmid_score, 4)}
+            if c.plasmid_hallmarks:
+                d["plasmid"]["hallmarks"] = c.plasmid_hallmarks
+            if c.conjugation_genes:
+                d["plasmid"]["conj"] = c.conjugation_genes
+            if c.amr_genes:
+                d["plasmid"]["amr"] = c.amr_genes
+        if c.is_provirus:
+            d["provirus"] = {"len": c.proviral_length}
+        # HGT / defense — only include positive findings
+        if c.has_integron:
+            d["integrons"] = c.integrons
+        if c.has_genomic_island:
+            d["islands"] = c.genomic_islands
+        if c.has_secretion_system:
+            d["secretion"] = c.secretion_systems
+        if c.has_defense_system:
+            d["defense"] = c.defense_systems
+        if c.coding_density:
+            d["coding_density"] = round(c.coding_density, 4)
+        # Domain — only if classified
+        if c.domain_class:
+            d["domain"] = c.domain_class
+        if c.domain_confidence:
+            d["domain_conf"] = c.domain_confidence
+        if c.organellar_subtype:
+            d["organellar"] = c.organellar_subtype
+        return self._prune(d)
 
     def get_graph_neighbors(self, contig_name: str) -> dict:
         """Assembly graph neighbors with their bin assignments."""
@@ -229,29 +241,20 @@ class ContigToolkit:
         if has_graph:
             available_signals.append("graph")
 
-        result = {
+        result: dict = {
             "contig": contig_name,
             "bin": self._display(bin_name),
-            "fit_score": round(v, 4),
-            "tnf_cosine_similarity": round(tnf_cos, 4),
-            "bin_tnf_coherence": round(comm.tnf_coherence, 4),
-            "tnf_zscore": round(abs(tnf_cos - comm.tnf_coherence) / comm.tnf_sim_stdev, 2) if comm.tnf_sim_stdev > 0 else 0.0,
-            "cov_pearson_r": round(cov_r, 4) if cov_r is not None else None,
-            "graph_neighbor_fraction": round(neighbor_frac, 4) if neighbor_frac is not None else None,
-            "contig_gc": round(c.gc, 4),
-            "bin_mean_gc": round(comm.mean_gc, 4),
-            "gc_delta": round(abs(c.gc - comm.mean_gc), 4),
-            "bin_gc_stdev": round(comm.gc_stdev, 4),
-            "gc_zscore": round(abs(c.gc - comm.mean_gc) / comm.gc_stdev, 2) if comm.gc_stdev > 0 else 0.0,
-            "bin_completeness": round(comm.completeness, 2),
-            "bin_quality_tier": comm.quality_tier,
-            "signals_used": available_signals,
+            "fit": round(v, 4),
+            "tnf_cos": round(tnf_cos, 4),
+            "tnf_z": round(abs(tnf_cos - comm.tnf_coherence) / comm.tnf_sim_stdev, 2) if comm.tnf_sim_stdev > 0 else 0.0,
+            "gc_z": round(abs(c.gc - comm.mean_gc) / comm.gc_stdev, 2) if comm.gc_stdev > 0 else 0.0,
         }
-        if has_graph:
-            result["graph_neighbors_in_bin"] = neighbors_in
         if cov_r is not None:
-            result["contig_coverage"] = [round(float(x), 6) for x in c.coverage]
-            result["bin_mean_coverage"] = [round(float(x), 6) for x in comm.mean_coverage] if comm.mean_coverage is not None else []
+            result["cov_r"] = round(cov_r, 4)
+        if neighbor_frac is not None:
+            result["graph_frac"] = round(neighbor_frac, 4)
+            if neighbors_in:
+                result["graph_in"] = neighbors_in
         return result
 
     def get_bin_info(self, bin_name: str) -> dict:
@@ -264,23 +267,20 @@ class ContigToolkit:
             "name": self._display(comm.name),
             "source_binner": comm.source_binner,
             "n_members": len(comm.members),
-            "total_size": comm.total_size,
-            "n50": comm.n50,
-            "mean_gc": round(comm.mean_gc, 4),
-            "gc_stdev": round(comm.gc_stdev, 4),
-            "completeness": round(comm.completeness, 2),
-            "completeness_note": "below detection threshold" if comm.completeness == 0 and comm.total_size < 500000 else None,
+            "size": comm.total_size,
+            "gc": round(comm.mean_gc, 4),
+            "gc_sd": round(comm.gc_stdev, 4),
+            "complete": round(comm.completeness, 2),
             "redundancy": round(comm.redundancy, 2),
-            "quality_tier": comm.quality_tier,
-            "tnf_coherence": round(comm.tnf_coherence, 4),
-            "coverage_correlation": round(comm.coverage_correlation, 4),
-            "graph_connectivity": round(comm.graph_connectivity, 4),
-            "missing_markers": comm.missing_markers,
+            "tier": comm.quality_tier,
+            "tnf_coh": round(comm.tnf_coherence, 4),
+            "cov_cor": round(comm.coverage_correlation, 4),
+            "graph_conn": round(comm.graph_connectivity, 4),
+            "n_missing_scg": len(comm.missing_markers),
         }
-        # Include mean coverage profile (actual data)
-        if comm.mean_coverage is not None:
-            d["mean_coverage_per_sample"] = [round(float(x), 6) for x in comm.mean_coverage]
-        return d
+        if comm.completeness == 0 and comm.total_size < 500000:
+            d["note"] = "below SCG detection threshold"
+        return self._prune(d)
 
     def get_missing_markers(self, bin_name: str) -> dict:
         """Marker genes the bin still needs."""
