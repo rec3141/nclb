@@ -192,7 +192,7 @@ def main():
     adjacency = load_gfa_graph(assembly_dir / "assembly_graph.gfa")
 
     # Save before stats
-    housed_before = sum(1 for c in identities.values() if c.community)
+    binned_before = sum(1 for c in identities.values() if c.community)
 
     # --- Extract and resolve proposals ---
     log("[INFO] Extracting proposals from conversation results...")
@@ -221,18 +221,18 @@ def main():
     recompute_metrics(communities, identities, adjacency)
 
     # After stats
-    housed_after = sum(1 for c in identities.values() if c.community)
+    binned_after = sum(1 for c in identities.values() if c.community)
 
     # --- Assembly stats ---
     assembly_stats = {
         "total_contigs": len(identities),
         "total_assembly_size": sum(c.size for c in identities.values()),
         "total_communities": len(communities),
-        "housed_before": housed_before,
-        "housed_before_pct": 100 * housed_before / len(identities),
-        "housed_after": housed_after,
-        "housed_after_pct": 100 * housed_after / len(identities),
-        "delta_housed": housed_after - housed_before,
+        "binned_before": binned_before,
+        "binned_before_pct": 100 * binned_before / len(identities),
+        "binned_after": binned_after,
+        "binned_after_pct": 100 * binned_after / len(identities),
+        "delta_binned": binned_after - binned_before,
         "quality_tiers": {},
     }
     for comm in communities.values():
@@ -291,9 +291,9 @@ def main():
     log("GATHERING 3: INTEGRATION — COMPLETE")
     log("=" * 70)
     log(f"")
-    log(f"  Before NCLB:  {housed_before:,} contigs housed ({100*housed_before/len(identities):.1f}%)")
-    log(f"  After NCLB:   {housed_after:,} contigs housed ({100*housed_after/len(identities):.1f}%)")
-    log(f"  Delta:        +{housed_after - housed_before:,}")
+    log(f"  Before NCLB:  {binned_before:,} contigs binned ({100*binned_before/len(identities):.1f}%)")
+    log(f"  After NCLB:   {binned_after:,} contigs binned ({100*binned_after/len(identities):.1f}%)")
+    log(f"  Delta:        +{binned_after - binned_before:,}")
     log(f"  Communities:  {len(communities)}")
     log(f"")
     log(f"  Released:     {len(changes['released'])}")

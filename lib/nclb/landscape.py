@@ -246,31 +246,31 @@ def plot_landscape(
     clusters = np.array([results[n].cluster for n in names])
 
     categories = []
-    voices = []
+    n_binners_arr = []
     comm_labels = []
     sizes = []
     for n in names:
         c = identities.get(n)
         if not c:
             categories.append("unknown")
-            voices.append(0)
+            n_binners_arr.append(0)
             comm_labels.append("unbinned")
             sizes.append(0)
             continue
         sizes.append(c.size)
-        voices.append(c.n_binners)
+        n_binners_arr.append(c.n_binners)
         if c.community:
-            categories.append("housed")
+            categories.append("binned")
             comm_labels.append(c.community)
         elif c.n_binners == 0:
-            categories.append("voiceless")
+            categories.append("unrecognized")
             comm_labels.append("unbinned")
         else:
-            categories.append("voiced-unhoused")
+            categories.append("recognized unbinned")
             comm_labels.append("unbinned")
 
     categories = np.array(categories)
-    voices = np.array(voices)
+    n_binners_arr = np.array(n_binners_arr)
     sizes = np.array(sizes)
 
     fig, axes = plt.subplots(2, 2, figsize=(20, 18))
@@ -278,21 +278,21 @@ def plot_landscape(
     # --- Panel 1: Category ---
     ax = axes[0, 0]
     cat_config = {
-        "housed": ("#2196F3", 3, 2, 0.4),
-        "voiceless": ("#9E9E9E", 8, 1, 0.5),
-        "voiced-unhoused": ("#FF9800", 5, 3, 0.4),
+        "binned": ("#2196F3", 3, 2, 0.4),
+        "unrecognized": ("#9E9E9E", 8, 1, 0.5),
+        "recognized unbinned": ("#FF9800", 5, 3, 0.4),
     }
-    for cat in ["housed", "voiceless", "voiced-unhoused"]:
+    for cat in ["binned", "unrecognized", "recognized unbinned"]:
         color, s, z, alpha = cat_config[cat]
         mask = categories == cat
         ax.scatter(xs[mask], ys[mask], c=color, s=s, alpha=alpha,
                    label=f"{cat} ({mask.sum():,})", zorder=z, rasterized=True)
     ax.legend(loc="upper right", fontsize=10)
-    ax.set_title("Category", fontsize=14)
+    ax.set_title("Bin Status", fontsize=14)
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")
 
-    # --- Panel 2: All named communities ---
+    # --- Panel 2: All named bins ---
     ax = axes[0, 1]
     comm_counts = Counter(c for c in comm_labels if c != "unbinned")
     all_comms = [c for c, _ in comm_counts.most_common()]
@@ -338,16 +338,16 @@ def plot_landscape(
                 bbox=dict(boxstyle="round,pad=0.08", facecolor="white",
                           alpha=0.5, edgecolor="none"), zorder=3)
 
-    ax.set_title(f"Communities ({n_comms} total)", fontsize=14)
+    ax.set_title(f"Bins ({n_comms} total)", fontsize=14)
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")
 
-    # --- Panel 3: Voice strength ---
+    # --- Panel 3: Binner agreement ---
     ax = axes[1, 0]
-    sc = ax.scatter(xs, ys, c=voices, cmap="YlOrRd", s=3, alpha=0.4,
+    sc = ax.scatter(xs, ys, c=n_binners_arr, cmap="YlOrRd", s=3, alpha=0.4,
                     vmin=0, vmax=5, rasterized=True)
-    plt.colorbar(sc, ax=ax, label="Voice strength (0-5 binners)")
-    ax.set_title("Voice Strength (Binner Agreement)", fontsize=14)
+    plt.colorbar(sc, ax=ax, label="Binner agreement (0-5)")
+    ax.set_title("Binner Agreement", fontsize=14)
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")
 

@@ -5,7 +5,7 @@ templates and tool definitions that let the LLM investigate on behalf
 of contigs and communities.
 
 Model hierarchy (the wisdom of scale):
-  Haiku   — contig agents (Round 2: unhoused contigs, Round 3: voiceless clusters)
+  Haiku   — contig agents (Round 2: unbinned contigs, Round 3: unrecognized clusters)
   Sonnet  — Elder agents (Round 1: community health, Elder investigations)
   Opus    — Contigsattva agents (mentoring, dispute mediation, Mediator)
 """
@@ -99,7 +99,7 @@ class ContigToolkit:
             return {"error": f"Unknown contig: {contig_name}"}
         d: dict = {
             "name": c.name,
-            "size": c.size,
+            "len": c.size,
             "gc": round(c.gc, 4),
             "cov": round(c.assembly_coverage, 2),
             "n_binners": f"{c.n_binners}/{self.total_binners}",
@@ -119,6 +119,9 @@ class ContigToolkit:
             d["scgs"] = c.marker_genes
         if len(c.connections) > 0:
             d["n_neighbors"] = len(c.connections)
+            read_linked = sum(1 for r in c.connections.values() if r > 0)
+            if read_linked > 0:
+                d["read_linked_neighbors"] = read_linked
         # UMAP
         if c.landscape_x != 0.0 or c.landscape_y != 0.0:
             d["umap_pos"] = [round(c.landscape_x, 2), round(c.landscape_y, 2)]
@@ -170,20 +173,22 @@ class ContigToolkit:
         return self._prune(d)
 
     def get_graph_neighbors(self, contig_name: str) -> dict:
-        """Assembly graph neighbors with their bin assignments."""
+        """Assembly graph neighbors with their bin assignments and read support."""
         c = self.identities.get(contig_name)
         if not c:
             return {"error": f"Unknown contig: {contig_name}"}
         neighbors = []
-        for n in c.connections:
+        for n, reads in c.connections.items():
             nc = self.identities.get(n)
             if nc:
-                neighbors.append({
+                entry = {
                     "name": n,
-                    "size": nc.size,
-                    "bin": self._display(nc.community),
+                    "len": nc.size,
                     "gc": round(nc.gc, 4),
-                })
+                }
+                if reads > 0:
+                    entry["reads"] = reads
+                neighbors.append(entry)
         return {"contig": contig_name, "neighbors": neighbors}
 
     def get_binner_assignments(self, contig_name: str) -> dict:
@@ -255,6 +260,9 @@ class ContigToolkit:
             result["graph_frac"] = round(neighbor_frac, 4)
             if neighbors_in:
                 result["graph_in"] = neighbors_in
+                reads_in = sum(c.connections.get(n, 0) for n in neighbors_in)
+                if reads_in > 0:
+                    result["reads_in"] = reads_in
         return result
 
     def get_bin_info(self, bin_name: str) -> dict:
@@ -267,7 +275,7 @@ class ContigToolkit:
             "name": self._display(comm.name),
             "source_binner": comm.source_binner,
             "n_members": len(comm.members),
-            "size": comm.total_size,
+            "len": comm.total_size,
             "gc": round(comm.mean_gc, 4),
             "gc_sd": round(comm.gc_stdev, 4),
             "complete": round(comm.completeness, 2),
@@ -323,8 +331,8 @@ class ContigToolkit:
         return {
             "contig": contig_name,
             "bin": self._display(bin_name),
-            "size_delta": c.size,
-            "new_total_size": new_size,
+            "len_delta": c.size,
+            "new_total_len": new_size,
             "gc_shift": round(gc_shift, 4),
             "contributed_markers": contributed_markers,
             "n_contributed": len(contributed_markers),
@@ -348,13 +356,13 @@ class ContigToolkit:
         }
 
     def find_graph_connections(self, contig_name: str) -> dict:
-        """Which bins is a contig graph-connected to?"""
+        """Which bins is a contig graph-connected to (with read support)?"""
         bridges = find_graph_bridges(contig_name, self.communities, self.adjacency)
         return {
             "contig": contig_name,
             "bin_connections": [
-                {"bin": self._display(name), "n_edges": n}
-                for name, n in sorted(bridges.items(), key=lambda x: -x[1])
+                {"bin": self._display(name), "edges": info["edges"], "reads": info["reads"]}
+                for name, info in sorted(bridges.items(), key=lambda x: -x[1]["reads"])
             ],
         }
 
@@ -452,7 +460,7 @@ class ContigToolkit:
 CONTIG_TOOLS_ANTHROPIC = [
     {
         "name": "get_contig_info",
-        "description": "Returns contig metadata: size, GC%, coverage, taxonomy, domain, gene names, marker genes, MGE status, consensus bin assignment, n_binners (how many individual tools binned it anywhere — not specific to any consensus bin).",
+        "description": "Returns contig metadata: length, GC%, coverage, taxonomy, domain, gene names, marker genes, MGE status, consensus bin assignment, n_binners (how many individual tools binned it anywhere — not specific to any consensus bin).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -497,7 +505,7 @@ CONTIG_TOOLS_ANTHROPIC = [
     },
     {
         "name": "get_bin_info",
-        "description": "Returns bin profile: members, size, completeness, coverage, coherence metrics, quality tier.",
+        "description": "Returns bin profile: members, total length, completeness, coverage, coherence metrics, quality tier.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -519,7 +527,7 @@ CONTIG_TOOLS_ANTHROPIC = [
     },
     {
         "name": "predict_join_impact",
-        "description": "Predicts the impact of adding a contig to a bin: size change, GC shift, new marker gene contributions.",
+        "description": "Predicts the impact of adding a contig to a bin: length change, GC shift, new marker gene contributions.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -598,171 +606,6 @@ build evidence before making recommendations.
 Respond with JSON only. No commentary outside the JSON."""
 
 
-def round1_prompt(community: dict, uneasy: list[dict]) -> str:
-    """Prompt for Round 1: Community Health Check."""
-    uneasy_table = ""
-    if uneasy:
-        uneasy_table = "\nLow-fit members (negative fit score):\n"
-        for u in uneasy:
-            uneasy_table += (
-                f"  {u['contig']}: fit_score={u['valence']:+.3f}, "
-                f"size={u['size']:,}bp, GC={u['gc']:.3f} "
-                f"(bin mean {u['community_mean_gc']:.3f}), "
-                f"binners={u['n_binners']}/5\n"
-            )
-
-    return f"""Examine bin {community['name']} [{community['quality_tier']}].
-
-Bin state:
-  Members: {community.get('n_members', len(community.get('members', [])))}
-  Total size: {community['total_size']:,} bp
-  Completeness: {community['completeness']:.1f}%
-  Redundancy: {community['redundancy']:.1f}%
-  TNF coherence: {community['tnf_coherence']:.4f}
-  Coverage correlation: {community['coverage_correlation']:.4f}
-  Graph connectivity: {community['graph_connectivity']:.4f}
-  Mean fit: {community['mean_fit']:+.3f}
-  Min fit: {community['min_fit']:+.3f}
-  Uneasy members: {community['n_uneasy']}
-{uneasy_table}
-Use your tools to investigate any uneasy members and understand why they're
-uncomfortable. Check their identity, graph connections, and binner assignments.
-
-Then respond with this JSON structure:
-{{
-  "bin": "{community['name']}",
-  "assessment": "brief narrative of bin health",
-  "release": [
-    {{
-      "contig": "name",
-      "reason": "why this contig should leave"
-    }}
-  ],
-  "recruit": [
-    {{
-      "contig": "name",
-      "reason": "why this unbinned contig should join"
-    }}
-  ],
-  "concerns": ["any other observations"]
-}}"""
-
-
-ROUND2_SYSTEM = """You evaluate unbinned contigs seeking bin placement.
-
-Each contig has been recognized by at least some binning algorithms
-but was not placed in the consensus. You investigate each contig's identity,
-connections, and fit with nearby bins to recommend placement.
-
-You have tools to examine contigs, bins, and their relationships.
-Use them to build evidence. Do not guess — investigate.
-
-Prioritize contigs whose marker genes would increase a bin's
-completeness. But never force a contig into a bin where its composition
-clashes — that would harm the bin's coherence.
-
-Respond with JSON only."""
-
-
-def round2_prompt(contigs: list[dict], resonance: dict[str, list[dict]]) -> str:
-    """Prompt for Round 2: Unbinned contigs seek placement."""
-    contig_summaries = []
-    for c in contigs:
-        res = resonance.get(c["name"], [])
-        top_fits = ""
-        if res:
-            top3 = res[:3]
-            top_fits = "; ".join(
-                f"{r.get('community', r.get('contig', '?'))} (score={r['score']:.3f})"
-                for r in top3
-            )
-
-        contig_summaries.append(
-            f"  {c['name']}: {c['size']:,}bp, GC={c['gc']:.3f}, "
-            f"binners={c['n_binners']}/5, "
-            f"connections={len(c.get('connections', []))}, "
-            f"fit_scores=[{top_fits}]"
-        )
-
-    contig_list = "\n".join(contig_summaries)
-
-    return f"""You evaluate {len(contigs)} unbinned contigs seeking bin placement.
-
-Each has been assessed by the binning algorithms and measured against nearby bins.
-Use your tools to investigate their identity, connections, and fit scores
-before making recommendations.
-
-Contigs:
-{contig_list}
-
-For each contig, investigate using tools and then recommend:
-- "join" — if there's a clear fit with a bin
-- "wait" — if signals conflict (needs further investigation)
-- "wander" — if no bin fits (may seed a new one)
-
-Respond with this JSON structure:
-{{
-  "decisions": [
-    {{
-      "contig": "name",
-      "action": "join|wait|wander",
-      "bin": "bin_name or null",
-      "evidence": "brief summary of investigation",
-      "fit_score": 0.0
-    }}
-  ]
-}}"""
-
-
-ROUND3_SYSTEM = """You evaluate candidate new bins formed from unbinned contigs.
-
-These are contigs that no binner recognized and no graph connects to existing
-bins. They have been clustered by composition and abundance. You
-evaluate whether each cluster represents a real organism or noise.
-
-Signs of a real genome:
-- High composition similarity (>0.9 TNF cosine coherence)
-- Correlated coverage across samples
-- Consistent ancestry
-- Presence of essential life-function genes
-- Reasonable genome size for the taxonomic group
-
-Respond with JSON only."""
-
-
-def round3_prompt(clusters: list[dict]) -> str:
-    """Prompt for Round 3: Unbinned clusters."""
-    cluster_summaries = []
-    for cl in clusters:
-        cluster_summaries.append(
-            f"  Cluster {cl['id']}: {cl['n_members']} contigs, "
-            f"{cl['total_size']:,}bp, "
-            f"TNF coherence={cl['tnf_coherence']:.3f}, "
-            f"Coverage correlation={cl.get('coverage_correlation', 0):.3f}, "
-            f"Mean GC={cl.get('mean_gc', 0):.3f}"
-        )
-
-    cluster_list = "\n".join(cluster_summaries)
-
-    return f"""{len(clusters)} clusters have emerged from the unbinned contigs —
-fragments that no binner recognized and no graph connects to existing bins.
-
-Candidate bins:
-{cluster_list}
-
-Evaluate each: does it look like a real organism or noise?
-
-Respond with this JSON structure:
-{{
-  "evaluations": [
-    {{
-      "cluster_id": 0,
-      "verdict": "accept|reject|uncertain",
-      "reason": "brief assessment",
-      "suggested_name": "descriptive name if accepted"
-    }}
-  ]
-}}"""
 
 
 # ---------------------------------------------------------------------------

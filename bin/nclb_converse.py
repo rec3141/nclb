@@ -50,6 +50,9 @@ def _load_prompt(name: str) -> str:
 ROUND1_SYSTEM = _load_prompt("round1_system.txt")
 ROUND2_SYSTEM = _load_prompt("round2_system.txt")
 ROUND3_SYSTEM = _load_prompt("round3_system.txt")
+ROUND1_USER = _load_prompt("round1_user.txt")
+ROUND2_USER = _load_prompt("round2_user.txt")
+ROUND3_USER = _load_prompt("round3_user.txt")
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +140,8 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
 
     if tool_name == "get_graph_neighbors":
         neighbors = result.get("neighbors", [])
-        housed = sum(1 for n in neighbors if n.get("bin"))
-        return f"{len(neighbors)} neighbors ({housed} housed)"
+        binned = sum(1 for n in neighbors if n.get("bin"))
+        return f"{len(neighbors)} neighbors ({binned} binned)"
 
     if tool_name == "read_annotations":
         return (
@@ -383,36 +386,31 @@ def run_tool_conversation(
 def round1_prompt(comm_name: str, comm_data: dict,
                   member_scores: list[tuple[str, float]],
                   display_name: str | None = None) -> str:
-    """Brief prompt for Round 1 — the LLM investigates via tools."""
+    """Build Round 1 user prompt from external template."""
     shown_name = display_name or comm_name
-    quality = comm_data.get('quality_tier', 'none')
 
     # Show all members sorted by fit score (worst first)
     score_lines = []
     for name, score in sorted(member_scores, key=lambda x: (x[1] is None, x[1] or 0)):
         s = f"{score:+.3f}" if score is not None else "NA"
         score_lines.append(f"  {name}: {s}")
-    members_section = "\n".join(score_lines)
 
     mean_fit = comm_data.get('mean_fit') or 0.0
     min_fit = comm_data.get('min_fit') or 0.0
     completeness = comm_data.get('completeness') or 0.0
     redundancy = comm_data.get('redundancy') or 0.0
 
-    return f"""Examine bin "{shown_name}".
-
-Quick overview:
-  Quality tier: {quality}
-  Members: {len(comm_data.get('members', []))}
-  Size: {comm_data.get('total_size', 0):,} bp
-  Wholeness: {completeness:.1f}% | Redundancy: {redundancy:.1f}%
-  Mean fit: {mean_fit:+.3f} | Min fit: {min_fit:+.3f}
-
-Members (sorted by fit score):
-{members_section}
-
-Use tools to investigate any members you find suspicious.
-Decide which contigs truly belong and which should be released."""
+    return ROUND1_USER.format(
+        bin_name=shown_name,
+        quality_tier=comm_data.get('quality_tier', 'none'),
+        n_members=len(comm_data.get('members', [])),
+        total_length=f"{comm_data.get('total_size', 0):,}",
+        completeness=f"{completeness:.1f}",
+        redundancy=f"{redundancy:.1f}",
+        mean_fit=f"{mean_fit:+.3f}",
+        min_fit=f"{min_fit:+.3f}",
+        members_section="\n".join(score_lines),
+    )
 
 
 def round2_prompt(
@@ -420,7 +418,7 @@ def round2_prompt(
     contig_candidates: dict[str, list[str]] | None = None,
     community_names: dict[str, str] | None = None,
 ) -> str:
-    """Brief prompt for Round 2 — the LLM investigates via tools."""
+    """Build Round 2 user prompt from external template."""
     display = community_names or {}
     lines = []
     for name in contig_names:
@@ -431,40 +429,26 @@ def round2_prompt(
         else:
             lines.append(f"  {name}: no pre-computed candidates (use find_graph_connections)")
 
-    contig_section = "\n".join(lines)
-    return f"""You evaluate {len(contig_names)} unbinned contigs seeking bin placement.
-
-Contigs and their candidate bins:
-{contig_section}
-
-For each contig:
-1. Call get_contig_info() to learn its full identity
-2. Call compare_to_bin(contig, bin_name) for the candidate bins listed above
-3. If no candidates are listed, call find_graph_connections() to discover bins
-4. Decide: join (specify the bin name exactly as listed), wait, or wander
-
-IMPORTANT: Only use bin names from the candidate list above or from tool results.
-Binner IDs like "semibin_074" are NOT bin names. Never invent names.
-
-Investigate each contig and recommend placement."""
+    return ROUND2_USER.format(
+        n_contigs=len(contig_names),
+        contig_section="\n".join(lines),
+    )
 
 
 def round3_prompt(clusters: list[dict]) -> str:
-    """Prompt for Round 3 — data-in-prompt is fine for cluster summaries."""
+    """Build Round 3 user prompt from external template."""
     lines = []
     for cl in clusters:
         lines.append(
             f"  Cluster {cl['id']}: {cl['n_members']} contigs, "
-            f"{cl['total_size']:,}bp, TNF coherence={cl['tnf_coherence']:.3f}, "
+            f"{cl['total_size']:,} bp, TNF coherence={cl['tnf_coherence']:.3f}, "
             f"Coverage correlation={cl.get('coverage_correlation', 0):.3f}, "
             f"Mean GC={cl.get('mean_gc', 0):.3f}"
         )
-    return f"""{len(clusters)} clusters emerged from unbinned contigs.
-
-CANDIDATES:
-{chr(10).join(lines)}
-
-Evaluate each: real organism or noise?"""
+    return ROUND3_USER.format(
+        n_clusters=len(clusters),
+        cluster_section="\n".join(lines),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -658,11 +642,19 @@ def main():
     # Cache to JSON to avoid re-scanning 1.8GB of BAMs every startup (~30s)
     bam_files = sorted(mapping_dir.glob("*.sorted.bam"))
     read_adj_cache = mapping_dir / "read_adjacency.json"
-    read_adj: dict[str, list[str]] = {}
+    read_adj: dict[str, dict[str, int]] = {}
     if bam_files:
         if read_adj_cache.exists():
             with open(read_adj_cache) as f:
-                read_adj = json.load(f)
+                raw = json.load(f)
+            # Handle old format (list) → convert to weighted dict with count 1
+            if raw and isinstance(next(iter(raw.values())), list):
+                read_adj = {k: {n: 1 for n in v} for k, v in raw.items()}
+                log(f"[INFO] Converted legacy read adjacency cache → weighted")
+                with open(read_adj_cache, "w") as f:
+                    json.dump(read_adj, f)
+            else:
+                read_adj = raw
             log(f"[INFO] Loaded cached read adjacency ({len(read_adj)} contigs)")
         else:
             read_adj = load_read_adjacency(bam_files)
@@ -675,9 +667,11 @@ def main():
             f"merged={len(adjacency)} contigs")
         # Update contig identity connections with merged adjacency
         for name, c in identities.items():
-            c.connections = adjacency.get(name, [])
+            c.connections = adjacency.get(name, {})
     else:
-        adjacency = gfa_adjacency
+        adjacency = {k: {n: 0 for n in v} for k, v in gfa_adjacency.items()}
+        for name, c in identities.items():
+            c.connections = adjacency.get(name, {})
         log(f"[INFO] No BAM files found in {mapping_dir}, using GFA adjacency only")
 
     log(f"[INFO] Loaded {len(identities):,} contigs, {len(communities)} DAS Tool communities")
@@ -731,11 +725,28 @@ def main():
         log(f"[INFO] Seeded {len(new_comms)} binner-agreement communities ({len(binner_assigned):,} contigs)")
     log(f"[INFO] Total: {len(identities):,} contigs, {len(communities)} communities")
 
-    # Compute fit scores for housed contigs
+    # Compute fit scores for binned contigs
     from nclb.valence import contig_fit_score as cv
     for name, c in identities.items():
         if c.community and c.community in communities:
             c.fit_score = cv(c, communities[c.community], adjacency)
+
+    # Compute global fit score distribution for LLM context
+    all_fit = [c.fit_score for c in identities.values()
+               if c.community and c.fit_score is not None]
+    if all_fit:
+        all_fit_sorted = sorted(all_fit)
+        n = len(all_fit_sorted)
+        fit_dist = {
+            "p25": all_fit_sorted[n // 4],
+            "median": all_fit_sorted[n // 2],
+            "p75": all_fit_sorted[3 * n // 4],
+        }
+        log(f"[INFO] Fit score distribution (n={n:,}): "
+            f"p25={fit_dist['p25']:+.3f}, median={fit_dist['median']:+.3f}, "
+            f"p75={fit_dist['p75']:+.3f}")
+    else:
+        fit_dist = None
 
     # Coherence metrics are computed lazily per-bin (JIT) to avoid 3+ min startup
     from nclb.valence import community_metrics
@@ -819,7 +830,18 @@ def main():
 
     # Note: fit scores already computed at startup (line ~737) with current formula
 
-    for comm_name in sorted(communities.keys()):
+    # Build Round 1 system prompt with fit score distribution context
+    r1_system = ROUND1_SYSTEM
+    if fit_dist:
+        r1_system += (
+            f"\n\nFit score IQR across all binned contigs: "
+            f"[{fit_dist['p25']:+.3f}, {fit_dist['p75']:+.3f}]"
+        )
+
+    import random
+    comm_order = list(communities.keys())
+    random.shuffle(comm_order)
+    for comm_name in comm_order:
         comm = communities[comm_name]
 
         # JIT: compute coherence and build data dict per-bin (avoids 3+ min startup)
@@ -853,7 +875,7 @@ def main():
                                display_name=community_names.get(comm_name))
         try:
             result = run_tool_conversation(
-                client, model, ROUND1_SYSTEM, prompt, toolkit,
+                client, model, r1_system, prompt, toolkit,
                 max_rounds=args.max_tool_rounds, log_fn=log,
             )
             n_releases = len(result.get("release", []))
@@ -863,9 +885,10 @@ def main():
             if n_splits:
                 parts.append(f"{n_splits} splits")
             log(f"  {comm_name}: {', '.join(parts)} ({n_tc} tool calls)")
-            all_proposals.append({
-                "round": 1, "bin": comm_name, "result": result,
-            })
+            proposal = {"round": 1, "bin": comm_name, "result": result}
+            all_proposals.append(proposal)
+            with open(output_path.parent / "proposals.jsonl", "a") as jf:
+                jf.write(json.dumps(proposal, default=str) + "\n")
         except Exception as e:
             log(f"  [ERROR] {comm_name}: {e}")
 
@@ -878,6 +901,15 @@ def main():
         and p.get("result", {}).get("split")
     )
     log(f"\nRound 1 complete: {r1_releases} releases, {r1_splits} splits from {len(communities)} communities")
+
+    # Update landscape plot after Round 1
+    if landscape_data:
+        from nclb.landscape import plot_landscape
+        plot_path = output_path.parent / "landscape.png"
+        plot_landscape(landscape_data, identities, communities, plot_path,
+                       community_names=community_names,
+                       title="NCLB Contig Landscape — after Round 1")
+        log(f"[INFO] Updated landscape plot → {plot_path}")
 
     # =====================================================================
     # Round 2: Unhoused Contigs Speak (tool-use)
@@ -895,19 +927,19 @@ def main():
                 contig_candidates.setdefault(cand["contig"], []).append(comm_name)
         log(f"  Pre-computed candidates for {len(contig_candidates)} contigs from gathering.json")
 
-    # Select unhoused contigs with binner support (sorted by n_binners, then size)
-    unhoused = [
+    # Select unbinned contigs with binner support (sorted by n_binners, then size)
+    unbinned = [
         c for c in identities.values()
         if c.community is None and c.n_binners >= 2
     ]
-    unhoused.sort(key=lambda c: (-c.n_binners, -c.size))
-    unhoused = unhoused[:args.max_round2]
-    log(f"  Processing {len(unhoused)} unhoused contigs (n_binners >= 2)")
+    unbinned.sort(key=lambda c: (-c.n_binners, -c.size))
+    unbinned = unbinned[:args.max_round2]
+    log(f"  Processing {len(unbinned)} unbinned contigs (n_binners >= 2)")
 
     # Batch contigs for conversation
     batches = []
-    for i in range(0, len(unhoused), args.batch_size):
-        batches.append([c.name for c in unhoused[i:i + args.batch_size]])
+    for i in range(0, len(unbinned), args.batch_size):
+        batches.append([c.name for c in unbinned[i:i + args.batch_size]])
 
     for batch_idx, batch_names in enumerate(batches):
         prompt = round2_prompt(batch_names, contig_candidates, community_names)
@@ -935,9 +967,10 @@ def main():
             n_decisions = len(result.get("decisions", []))
             n_joins = sum(1 for d in result.get("decisions", []) if d.get("action") == "join")
             log(f"  Batch {batch_idx+1}/{len(batches)}: {n_decisions} decisions ({n_joins} joins, {n_tc} tool calls)")
-            all_proposals.append({
-                "round": 2, "batch": batch_idx, "result": result,
-            })
+            proposal = {"round": 2, "batch": batch_idx, "result": result}
+            all_proposals.append(proposal)
+            with open(output_path.parent / "proposals.jsonl", "a") as jf:
+                jf.write(json.dumps(proposal, default=str) + "\n")
         except Exception as e:
             log(f"  [ERROR] Batch {batch_idx+1}: {e}")
 
@@ -951,6 +984,15 @@ def main():
         if d.get("action") == "join"
     )
     log(f"\nRound 2 complete: {r2_decisions} decisions ({r2_joins} joins)")
+
+    # Update landscape plot after Round 2
+    if landscape_data:
+        from nclb.landscape import plot_landscape
+        plot_path = output_path.parent / "landscape.png"
+        plot_landscape(landscape_data, identities, communities, plot_path,
+                       community_names=community_names,
+                       title="NCLB Contig Landscape — after Round 2")
+        log(f"[INFO] Updated landscape plot → {plot_path}")
 
     # =====================================================================
     # Round 3: Voiceless Clusters
@@ -971,12 +1013,24 @@ def main():
                 max_rounds=3, log_fn=log,
             )
             result.pop("_tool_calls", None)
-            r3_proposals.append({"round": 3, "clusters": clusters, "result": result})
+            proposal = {"round": 3, "clusters": clusters, "result": result}
+            r3_proposals.append(proposal)
+            with open(output_path.parent / "proposals.jsonl", "a") as jf:
+                jf.write(json.dumps(proposal, default=str) + "\n")
         except Exception as e:
             log(f"  [ERROR] Round 3: {e}")
     else:
         log("  No viable voiceless clusters found")
     all_proposals.extend(r3_proposals)
+
+    # Final landscape plot after Round 3
+    if landscape_data:
+        from nclb.landscape import plot_landscape
+        plot_path = output_path.parent / "landscape.png"
+        plot_landscape(landscape_data, identities, communities, plot_path,
+                       community_names=community_names,
+                       title="NCLB Contig Landscape — final")
+        log(f"[INFO] Updated landscape plot → {plot_path}")
 
     # --- Summary ---
     summary = {

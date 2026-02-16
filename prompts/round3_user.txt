@@ -1,0 +1,6 @@
+{n_clusters} clusters emerged from unbinned contigs.
+
+CANDIDATES:
+{cluster_section}
+
+Evaluate each: real organism or noise?

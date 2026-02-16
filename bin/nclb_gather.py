@@ -434,8 +434,8 @@ def main():
     cross_edges = shared_edge_communities(communities, adjacency)
 
     # --- Assembly statistics ---
-    housed = sum(1 for c in identities.values() if c.community is not None)
-    unhoused = len(identities) - housed
+    binned = sum(1 for c in identities.values() if c.community is not None)
+    unbinned = len(identities) - binned
     recognized_unbinned = sum(
         1 for c in identities.values()
         if c.community is None and c.n_binners > 0
@@ -449,14 +449,14 @@ def main():
     assembly_stats = {
         "total_contigs": len(identities),
         "total_communities": len(communities),
-        "housed": housed,
-        "unhoused": unhoused,
+        "binned": binned,
+        "unbinned": unbinned,
         "recognized_unbinned": recognized_unbinned,
         "graph_connected": graph_connected,
         "unrecognized": unrecognized,
         "total_assembly_size": sum(c.size for c in identities.values()),
-        "housed_size": sum(c.size for c in identities.values() if c.community),
-        "unhoused_size": sum(c.size for c in identities.values() if not c.community),
+        "binned_size": sum(c.size for c in identities.values() if c.community),
+        "unbinned_size": sum(c.size for c in identities.values() if not c.community),
     }
 
     elder_counts = {}
@@ -468,16 +468,16 @@ def main():
     n_viral = sum(1 for c in identities.values() if c.is_viral)
     n_plasmid = sum(1 for c in identities.values() if c.is_plasmid)
     n_provirus = sum(1 for c in identities.values() if c.is_provirus)
-    n_viral_housed = sum(1 for c in identities.values() if c.is_viral and c.community)
-    n_plasmid_housed = sum(1 for c in identities.values() if c.is_plasmid and c.community)
-    n_provirus_housed = sum(1 for c in identities.values() if c.is_provirus and c.community)
+    n_viral_binned = sum(1 for c in identities.values() if c.is_viral and c.community)
+    n_plasmid_binned = sum(1 for c in identities.values() if c.is_plasmid and c.community)
+    n_provirus_binned = sum(1 for c in identities.values() if c.is_provirus and c.community)
     assembly_stats["mge"] = {
         "viral": n_viral,
         "plasmid": n_plasmid,
         "provirus": n_provirus,
-        "viral_housed": n_viral_housed,
-        "plasmid_housed": n_plasmid_housed,
-        "provirus_housed": n_provirus_housed,
+        "viral_binned": n_viral_binned,
+        "plasmid_binned": n_plasmid_binned,
+        "provirus_binned": n_provirus_binned,
     }
 
     # Taxonomy stats
@@ -509,7 +509,7 @@ def main():
             for a, b, n in cross_edges[:50]  # top 50 pairs
         ],
         "uneasy_members": {},
-        "unhoused_with_voice": [],
+        "unbinned_with_support": [],
     }
 
     # Detailed uneasy member lists per community
@@ -552,14 +552,14 @@ def main():
             if uneasy:
                 gathering["uneasy_members"][comm_name] = uneasy
 
-    # Top unhoused contigs with voice (for Round 2)
-    unhoused_voiced = [
+    # Top unbinned contigs with binner support (for Round 2)
+    unbinned_supported = [
         c for c in identities.values()
         if c.community is None and c.n_binners >= 2
     ]
-    unhoused_voiced.sort(key=lambda c: (-c.n_binners, -c.size))
-    for c in unhoused_voiced[:500]:
-        gathering["unhoused_with_voice"].append(serialize_identity(c))
+    unbinned_supported.sort(key=lambda c: (-c.n_binners, -c.size))
+    for c in unbinned_supported[:500]:
+        gathering["unbinned_with_support"].append(serialize_identity(c))
 
     # --- Write output ---
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -576,8 +576,8 @@ def main():
     log(f"")
     log(f"  Contigs:       {assembly_stats['total_contigs']:>8,}")
     log(f"  Bins:          {assembly_stats['total_communities']:>8}")
-    log(f"  Housed:        {housed:>8,} ({100*housed/len(identities):.1f}%)")
-    log(f"  Unhoused:      {unhoused:>8,} ({100*unhoused/len(identities):.1f}%)")
+    log(f"  Binned:        {binned:>8,} ({100*binned/len(identities):.1f}%)")
+    log(f"  Unbinned:      {unbinned:>8,} ({100*unbinned/len(identities):.1f}%)")
     log(f"    recognized by binners:  {recognized_unbinned:>8,}")
     log(f"    unrecognized:{unrecognized:>8,}")
     log(f"    graph-linked:{graph_connected:>8,}")
@@ -599,11 +599,11 @@ def main():
     if mge["viral"] or mge["plasmid"] or mge["provirus"]:
         log(f"  Mobile genetic elements:")
         if mge["viral"]:
-            log(f"    Viral:     {mge['viral']:>6} ({mge['viral_housed']} housed)")
+            log(f"    Viral:     {mge['viral']:>6} ({mge['viral_binned']} binned)")
         if mge["plasmid"]:
-            log(f"    Plasmid:   {mge['plasmid']:>6} ({mge['plasmid_housed']} housed)")
+            log(f"    Plasmid:   {mge['plasmid']:>6} ({mge['plasmid_binned']} binned)")
         if mge["provirus"]:
-            log(f"    Provirus:  {mge['provirus']:>6} ({mge['provirus_housed']} housed)")
+            log(f"    Provirus:  {mge['provirus']:>6} ({mge['provirus_binned']} binned)")
         log(f"")
 
     # Integron / island / secretion / defense stats

@@ -276,7 +276,7 @@ Conflicts requiring resolution:{conflict_desc or " (none)"}
 
 Assembly context:
   Total contigs: {stats.get('total_contigs', 0):,}
-  Currently housed: {stats.get('housed', 0):,}
+  Currently binned: {stats.get('binned', 0):,}
   Bins: {stats.get('total_communities', 0)}
 
 For each conflict, decide:

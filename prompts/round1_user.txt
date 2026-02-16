@@ -1,0 +1,14 @@
+Examine bin "{bin_name}".
+
+Quick overview:
+  Quality tier: {quality_tier}
+  Members: {n_members}
+  Total length: {total_length} bp
+  Completeness: {completeness}% | Redundancy: {redundancy}%
+  Mean fit: {mean_fit} | Min fit: {min_fit}
+
+Members (sorted by fit score):
+{members_section}
+
+Use tools to investigate any members you find suspicious.
+Decide which contigs truly belong and which should be released.

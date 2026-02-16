@@ -29,7 +29,7 @@ class Chronicle:
         self.timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
         self.assembly_stats: dict = {}
         self.community_stories: list[CommunityStory] = []
-        self.unhoused_stories: list[dict] = []
+        self.unbinned_stories: list[dict] = []
         self.new_community_stories: list[dict] = []
         self.elder_reports: list[dict] = []
         self.movable_stories: list[dict] = []
@@ -41,7 +41,7 @@ class Chronicle:
             "timestamp": self.timestamp,
             "assembly_stats": self.assembly_stats,
             "community_stories": [s.to_json() for s in self.community_stories],
-            "unhoused_stories": self.unhoused_stories,
+            "unbinned_stories": self.unbinned_stories,
             "new_community_stories": self.new_community_stories,
             "elder_reports": self.elder_reports,
             "movable_stories": self.movable_stories,
@@ -62,10 +62,10 @@ class Chronicle:
         lines.append(f"- **Total contigs**: {stats.get('total_contigs', 0):,}")
         lines.append(f"- **Total size**: {stats.get('total_assembly_size', 0):,} bp")
         lines.append(f"- **Bins**: {stats.get('total_communities', 0)}")
-        lines.append(f"- **Housed before NCLB**: {stats.get('housed_before', 0):,} "
-                      f"({stats.get('housed_before_pct', 0):.1f}%)")
-        lines.append(f"- **Housed after NCLB**: {stats.get('housed_after', 0):,} "
-                      f"({stats.get('housed_after_pct', 0):.1f}%)")
+        lines.append(f"- **Binned before NCLB**: {stats.get('binned_before', 0):,} "
+                      f"({stats.get('binned_before_pct', 0):.1f}%)")
+        lines.append(f"- **Binned after NCLB**: {stats.get('binned_after', 0):,} "
+                      f"({stats.get('binned_after_pct', 0):.1f}%)")
         lines.append("")
 
         if stats.get("quality_tiers"):
@@ -86,12 +86,12 @@ class Chronicle:
                 lines.append("")
 
         # Unbinned contig stories
-        if self.unhoused_stories:
+        if self.unbinned_stories:
             lines.append("---")
             lines.append("")
             lines.append("## Contigs Who Found a Home")
             lines.append("")
-            for story in self.unhoused_stories[:20]:
+            for story in self.unbinned_stories[:20]:
                 lines.append(f"### {story['contig']}")
                 lines.append("")
                 lines.append(f"*{story['size']:,} bp, GC={story['gc']:.3f}, "
@@ -273,11 +273,11 @@ def build_chronicle(
         if released or welcomed:
             chronicle.community_stories.append(story)
 
-    # Unhoused contig stories — contigs that found a home
+    # Unbinned contig stories — contigs that found a bin
     for joined in changes.get("joined", []):
         contig = identities.get(joined["contig"])
         if contig:
-            chronicle.unhoused_stories.append({
+            chronicle.unbinned_stories.append({
                 "contig": joined["contig"],
                 "bin": joined["to"],
                 "evidence": joined.get("evidence", ""),
@@ -437,8 +437,8 @@ def write_journal(
         "n_released": len(changes.get("released", [])),
         "n_joined": len(changes.get("joined", [])),
         "n_founded": len(changes.get("new_communities_founded", [])),
-        "housed_before": assembly_stats.get("housed_before", 0),
-        "housed_after": assembly_stats.get("housed_after", 0),
+        "binned_before": assembly_stats.get("binned_before", 0),
+        "binned_after": assembly_stats.get("binned_after", 0),
     })
 
     # Append all events

@@ -1,0 +1,15 @@
+You evaluate {n_contigs} unbinned contigs seeking bin placement.
+
+Contigs and their candidate bins:
+{contig_section}
+
+For each contig:
+1. Call get_contig_info() to learn its full identity
+2. Call compare_to_bin(contig, bin_name) for the candidate bins listed above
+3. If no candidates are listed, call find_graph_connections() to discover bins
+4. Decide: join (specify the bin name exactly as listed), wait, or wander
+
+IMPORTANT: Only use bin names from the candidate list above or from tool results.
+Binner IDs like "semibin_074" are NOT bin names. Never invent names.
+
+Investigate each contig and recommend placement.

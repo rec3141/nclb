@@ -32,15 +32,15 @@ print(f"Communities: {len(communities)}")
 print()
 
 # Population stats
-housed = sum(1 for c in identities.values() if c.community is not None)
-unbinned = len(identities) - housed
+binned = sum(1 for c in identities.values() if c.community is not None)
+unbinned = len(identities) - binned
 with_binners = sum(1 for c in identities.values() if c.n_binners > 0)
 no_binners = sum(1 for c in identities.values() if c.n_binners == 0 and c.community is None)
 graph_connected = sum(1 for c in identities.values() if c.connections)
 
-print(f"Housed:            {housed:,} ({100*housed/len(identities):.1f}%)")
+print(f"Binned:            {binned:,} ({100*binned/len(identities):.1f}%)")
 print(f"Unbinned:          {unbinned:,} ({100*unbinned/len(identities):.1f}%)")
-print(f"  with binner support: {with_binners - housed:,}")
+print(f"  with binner support: {with_binners - binned:,}")
 print(f"  no binner support:   {no_binners:,}")
 print(f"Graph-connected:   {graph_connected:,}")
 print()

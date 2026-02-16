@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from .identity import ContigIdentity, CommunityProfile
 
 
-def graph_connectivity(members: list[str], adjacency: dict[str, list[str]]) -> float:
+def graph_connectivity(members: list[str], adjacency: dict[str, dict[str, int]]) -> float:
     """Fraction of member pairs connected by at least one graph edge.
 
     0.0 = no members share graph edges (disconnected)
@@ -37,14 +37,14 @@ def graph_connectivity(members: list[str], adjacency: dict[str, list[str]]) -> f
 def find_graph_bridges(
     contig: str,
     communities: dict[str, CommunityProfile],
-    adjacency: dict[str, list[str]],
-) -> dict[str, int]:
+    adjacency: dict[str, dict[str, int]],
+) -> dict[str, dict[str, int]]:
     """Find which communities a contig is graph-connected to.
 
-    Returns: {community_name: n_edges_to_community}
+    Returns: {community_name: {"edges": n, "reads": total_read_support}}
     """
-    neighbors = adjacency.get(contig, [])
-    community_edges: dict[str, int] = {}
+    neighbors = adjacency.get(contig, {})
+    community_edges: dict[str, dict[str, int]] = {}
 
     # Build reverse lookup: contig → community
     contig_to_community = {}
@@ -52,17 +52,19 @@ def find_graph_bridges(
         for member in comm.members:
             contig_to_community[member] = comm.name
 
-    for neighbor in neighbors:
+    for neighbor, reads in (neighbors.items() if isinstance(neighbors, dict) else ((n, 0) for n in neighbors)):
         comm = contig_to_community.get(neighbor)
         if comm:
-            community_edges[comm] = community_edges.get(comm, 0) + 1
+            entry = community_edges.setdefault(comm, {"edges": 0, "reads": 0})
+            entry["edges"] += 1
+            entry["reads"] += reads
 
     return community_edges
 
 
 def shared_edge_communities(
     communities: dict[str, CommunityProfile],
-    adjacency: dict[str, list[str]],
+    adjacency: dict[str, dict[str, int]],
 ) -> list[tuple[str, str, int]]:
     """Find pairs of communities connected by assembly graph edges.
 

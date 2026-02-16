@@ -49,7 +49,7 @@ class ContigIdentity:
     marker_genes: list[str] = field(default_factory=list)
 
     # Social connections — assembly graph neighbors (contig names)
-    connections: list[str] = field(default_factory=list)
+    connections: dict[str, int] = field(default_factory=dict)  # neighbor → read support count
 
     # Binner assignments — what each binning algorithm said
     binner_assignments: dict[str, Optional[str]] = field(default_factory=dict)
@@ -310,12 +310,13 @@ def load_read_adjacency(
     bam_paths: list[Path],
     min_mapq: int = 5,
     min_aln_len: int = 500,
-) -> dict[str, list[str]]:
-    """Build contig adjacency from cross-contig supplementary alignments in BAMs.
+) -> dict[str, dict[str, int]]:
+    """Build weighted contig adjacency from cross-contig supplementary alignments.
 
     Reads with SA (supplementary alignment) tags indicate chimeric reads that
     span multiple contigs. When the primary and supplementary map to different
-    contigs, those contigs are linked.
+    contigs, those contigs are linked. The weight is the number of supporting
+    chimeric reads.
 
     Args:
         bam_paths: List of sorted, indexed BAM files.
@@ -323,14 +324,14 @@ def load_read_adjacency(
         min_aln_len: Minimum aligned length (from CIGAR) for supplementary.
 
     Returns:
-        Adjacency dict in same format as load_gfa_graph(): {contig: [neighbors]}.
+        Weighted adjacency: {contig: {neighbor: read_count}}.
     """
     try:
         import pysam
     except ImportError:
         return {}
 
-    adjacency: dict[str, set[str]] = {}
+    adjacency: dict[str, dict[str, int]] = {}
 
     for bam_path in bam_paths:
         try:
@@ -370,12 +371,14 @@ def load_read_adjacency(
                 if aln_len < min_aln_len:
                     continue
 
-                adjacency.setdefault(primary_contig, set()).add(supp_contig)
-                adjacency.setdefault(supp_contig, set()).add(primary_contig)
+                d = adjacency.setdefault(primary_contig, {})
+                d[supp_contig] = d.get(supp_contig, 0) + 1
+                d2 = adjacency.setdefault(supp_contig, {})
+                d2[primary_contig] = d2.get(primary_contig, 0) + 1
 
         bam.close()
 
-    return {k: sorted(v) for k, v in adjacency.items()}
+    return adjacency
 
 
 def _cigar_aligned_length(cigar: str) -> int:
@@ -388,13 +391,27 @@ def _cigar_aligned_length(cigar: str) -> int:
     return total
 
 
-def merge_adjacencies(*adj_dicts: dict[str, list[str]]) -> dict[str, list[str]]:
-    """Merge multiple adjacency dicts into one (union of all edges)."""
-    merged: dict[str, set[str]] = {}
-    for adj in adj_dicts:
-        for contig, neighbors in adj.items():
-            merged.setdefault(contig, set()).update(neighbors)
-    return {k: sorted(v) for k, v in merged.items()}
+def merge_adjacencies(
+    gfa_adj: dict[str, list[str]],
+    read_adj: dict[str, dict[str, int]],
+) -> dict[str, dict[str, int]]:
+    """Merge GFA (unweighted) and read (weighted) adjacency into weighted dict.
+
+    GFA-only links get weight 0. Read links carry their read count.
+    If both sources link the same pair, the read count is used.
+    """
+    merged: dict[str, dict[str, int]] = {}
+    # GFA links (weight 0 = graph-only, no read support)
+    for contig, neighbors in gfa_adj.items():
+        d = merged.setdefault(contig, {})
+        for n in neighbors:
+            d.setdefault(n, 0)
+    # Read links (overwrite with actual count)
+    for contig, neighbors in read_adj.items():
+        d = merged.setdefault(contig, {})
+        for n, count in neighbors.items():
+            d[n] = d.get(n, 0) + count
+    return merged
 
 
 def load_binner_assignments(paths: dict[str, Path]) -> dict[str, dict[str, Optional[str]]]:
@@ -1206,7 +1223,7 @@ def build_identities(
             is_circular=info.get("circular", False),
             is_repeat=info.get("repeat", False),
             multiplicity=info.get("multiplicity", 1),
-            connections=graph.get(name, []),
+            connections={n: 0 for n in graph.get(name, [])},
             binner_assignments=binner_assignments,
             n_binners=n_binners,
             community=community,
@@ -1417,7 +1434,8 @@ def seed_communities_from_binner_agreement(
     comm_counter = 0
 
     # Work from highest agreement to lowest
-    for k in range(n_binners, 2, -1):  # e.g., 5, 4, 3
+    min_agreement = max(n_binners - 1, 3)  # e.g., 5→4, 4→3
+    for k in range(n_binners, min_agreement - 1, -1):  # e.g., 5, 4
         remaining = unbinned - set(assigned.keys())
         if not remaining:
             break
@@ -1453,7 +1471,7 @@ def seed_communities_from_binner_agreement(
                 if total_size < min_total_size:
                     continue
 
-                comm_name = f"seed_bin_{comm_counter}"
+                comm_name = f"seed_bin_{comm_counter:03d}"
                 community_members[comm_name] = new_members
                 community_agreement[comm_name] = k
                 comm_counter += 1
