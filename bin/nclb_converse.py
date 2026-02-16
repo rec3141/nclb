@@ -115,11 +115,12 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
 
     if tool_name == "get_bin_info":
         return (
-            f"{result.get('n_members', 0)} members, "
-            f"{result.get('len', 0):,}bp, "
-            f"{result.get('complete', 0):.0f}% complete, "
-            f"{result.get('tier', '?')}, "
-            f"{result.get('n_missing_scg', 0)} missing SCGs"
+            f"{result.get('n_contigs', 0)} contigs, "
+            f"{result.get('total_length', 0):,}bp, "
+            f"N50={result.get('n50', 0):,}, "
+            f"{result.get('completeness', 0):.0f}% complete, "
+            f"{result.get('contamination', 0):.1f}% contam, "
+            f"{result.get('tier', '?')}"
         )
 
     if tool_name == "get_missing_markers":
@@ -787,11 +788,10 @@ def main():
             if full_scg_set:
                 comm.completeness = round(100.0 * len(inventory) / len(full_scg_set), 2)
                 c = comm.completeness
+                # MIMAG tiers (no CheckM2 for seed bins, use 0 contamination)
                 comm.quality_tier = (
-                    "excellent" if c >= 90 else
-                    "high" if c >= 80 else
-                    "good" if c >= 70 else
-                    "fair" if c >= 50 else "low"
+                    "high" if c > 90 else
+                    "medium" if c >= 50 else "low"
                 )
         communities.update(new_comms)
         log(f"[INFO] Seeded {len(new_comms)} binner-agreement communities ({len(binner_assigned):,} contigs)")
@@ -834,7 +834,7 @@ def main():
         log(f"[INFO] Fit score distribution (n={fit_dist['n']:,}): "
             f"p25={fit_dist['p25']:+.3f}, median={fit_dist['median']:+.3f}, "
             f"p75={fit_dist['p75']:+.3f}")
-        for tier in ["excellent", "high", "good", "fair", "low"]:
+        for tier in ["high", "medium", "low"]:
             if tier in fit_by_tier:
                 d = fit_by_tier[tier]
                 log(f"[INFO]   {tier:>9s} (n={d['n']:>4d}): "
@@ -938,7 +938,7 @@ def main():
         r1_system = _load_prompt("round1_system.txt")
         if fit_dist:
             tier_lines = []
-            for tier in ["excellent", "high", "good", "fair", "low"]:
+            for tier in ["high", "medium", "low"]:
                 if tier in fit_by_tier:
                     d = fit_by_tier[tier]
                     tier_lines.append(

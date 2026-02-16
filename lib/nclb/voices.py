@@ -363,14 +363,20 @@ class ContigToolkit:
         comm = self.communities.get(bin_name)
         if not comm:
             return {"error": f"Unknown bin: {bin_name}"}
+        # Assembly stats
+        member_sizes = [self.identities[m].size for m in comm.members if m in self.identities]
+        largest_contig = max(member_sizes) if member_sizes else 0
         d = {
             "name": self._display(comm.name),
             "source_binner": comm.source_binner,
-            "n_members": len(comm.members),
-            "len": comm.total_size,
+            "n_contigs": len(comm.members),
+            "total_length": comm.total_size,
+            "n50": comm.n50,
+            "largest_contig": largest_contig,
             "gc": round(comm.mean_gc, 4),
             "gc_sd": round(comm.gc_stdev, 4),
-            "complete": round(comm.completeness, 2),
+            "completeness": round(comm.completeness, 2),
+            "contamination": round(comm.contamination, 2),
             "redundancy": round(comm.redundancy, 2),
             "tier": comm.quality_tier,
             "tnf_coh": round(comm.tnf_coherence, 4),

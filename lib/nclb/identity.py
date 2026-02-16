@@ -159,7 +159,7 @@ class CommunityProfile:
     kegg_modules: dict[str, float] = field(default_factory=dict)  # module_id → completeness
 
     # Quality classification
-    quality_tier: str = "low"                           # low|fair|good|high|excellent
+    quality_tier: str = "low"                           # MIMAG: high|medium|low
 
 
 # ---------------------------------------------------------------------------
@@ -1538,15 +1538,15 @@ def build_identities(
         checkm2 = checkm2_data.get(bin_name, {})
 
         completeness = summary["completeness"]
-        # Determine elder rank
-        if completeness >= 95:
-            quality_tier = "excellent"
-        elif completeness >= 90:
+        contamination = checkm2.get("contamination", summary["redundancy"])
+        # MIMAG quality tiers (Bowers et al. 2017, Nature Biotechnology)
+        # High: >90% complete, <5% contamination
+        # Medium: ≥50% complete, <10% contamination
+        # Low: <50% complete or ≥10% contamination
+        if completeness > 90 and contamination < 5:
             quality_tier = "high"
-        elif completeness >= 70:
-            quality_tier = "good"
-        elif completeness >= 50:
-            quality_tier = "fair"
+        elif completeness >= 50 and contamination < 10:
+            quality_tier = "medium"
         else:
             quality_tier = "low"
 
