@@ -65,7 +65,7 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         return f"ERROR: {result['error']}"
 
     if tool_name == "get_contig_info":
-        parts = [f"{result.get('size', 0):,}bp"]
+        parts = [f"{result.get('len', 0):,}bp"]
         if result.get("ancestry"):
             # Show last two ranks of lineage
             lineage = result["ancestry"].split(";")
@@ -115,7 +115,7 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
     if tool_name == "get_bin_info":
         return (
             f"{result.get('n_members', 0)} members, "
-            f"{result.get('size', 0):,}bp, "
+            f"{result.get('len', 0):,}bp, "
             f"{result.get('complete', 0):.0f}% complete, "
             f"{result.get('tier', '?')}, "
             f"{result.get('n_missing_scg', 0)} missing SCGs"
@@ -126,7 +126,7 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
 
     if tool_name == "predict_join_impact":
         return (
-            f"+{result.get('size_delta', 0):,}bp, "
+            f"+{result.get('len_delta', 0):,}bp, "
             f"GC_shift={result.get('gc_shift', 0):.4f}, "
             f"{result.get('n_contributed', 0)} contributed SCGs"
         )
@@ -134,14 +134,14 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
     if tool_name == "find_graph_connections":
         conns = result.get("bin_connections", [])
         if conns:
-            top = ", ".join(f"{c['bin']}({c['n_edges']})" for c in conns[:3])
+            top = ", ".join(f"{c['bin']}({c['edges']}e,{c['reads']}r)" for c in conns[:3])
             return f"{len(conns)} bins: {top}"
         return "no graph connections"
 
     if tool_name == "get_graph_neighbors":
         neighbors = result.get("neighbors", [])
-        binned = sum(1 for n in neighbors if n.get("bin"))
-        return f"{len(neighbors)} neighbors ({binned} binned)"
+        read_linked = sum(1 for n in neighbors if n.get("reads", 0) > 0)
+        return f"{len(neighbors)} neighbors ({read_linked} read-linked)"
 
     if tool_name == "read_annotations":
         return (
