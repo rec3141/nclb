@@ -662,19 +662,167 @@ class ContigToolkit:
             ),
         }
 
+    def _render_network_matplotlib(
+        self, contig_name: str, hops: int,
+    ) -> dict:
+        """Render local network around a contig using matplotlib.
+
+        BFS from the target contig, collecting nodes within *hops* steps.
+        Edges are styled by type: solid = GFA link, dashed = read-bridged.
+        Nodes are colored by bin assignment.
+        """
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        # BFS to collect neighborhood
+        visited: dict[str, int] = {contig_name: 0}  # name → depth
+        frontier = [contig_name]
+        for depth in range(1, hops + 1):
+            next_frontier = []
+            for node in frontier:
+                cid = self.identities.get(node)
+                if not cid:
+                    continue
+                for nbr in cid.connections:
+                    if nbr not in visited:
+                        visited[nbr] = depth
+                        next_frontier.append(nbr)
+            frontier = next_frontier
+
+        if len(visited) < 2:
+            return {"error": f"Contig '{contig_name}' has no reachable neighbors"}
+
+        # Collect edges within the subgraph
+        edges: list[tuple[str, str, int]] = []  # (src, dst, reads)
+        seen_edges: set[tuple[str, str]] = set()
+        for node in visited:
+            cid = self.identities.get(node)
+            if not cid:
+                continue
+            for nbr, reads in cid.connections.items():
+                if nbr in visited:
+                    pair = tuple(sorted([node, nbr]))
+                    if pair not in seen_edges:
+                        seen_edges.add(pair)
+                        edges.append((node, nbr, reads))
+
+        # Spring layout via simple force-directed placement
+        # Use networkx if available, else fall back to circular
+        try:
+            import networkx as nx
+            G = nx.Graph()
+            G.add_nodes_from(visited.keys())
+            for src, dst, _ in edges:
+                G.add_edge(src, dst)
+            pos = nx.spring_layout(G, seed=42, k=1.5 / max(len(visited) ** 0.5, 1))
+        except ImportError:
+            # Circular layout fallback
+            import math
+            nodes = list(visited.keys())
+            pos = {}
+            for i, n in enumerate(nodes):
+                angle = 2 * math.pi * i / len(nodes)
+                pos[n] = (math.cos(angle), math.sin(angle))
+
+        # Assign colors per bin (golden-angle HSV)
+        bin_names = sorted({
+            self.identities[n].community
+            for n in visited if n in self.identities
+            and self.identities[n].community is not None
+        })
+        bin_color_map: dict[str | None, str] = {None: "#CCCCCC"}
+        golden_angle = 137.508 / 360.0
+        for i, bn in enumerate(bin_names):
+            hue = (i * golden_angle) % 1.0
+            sat = 0.55 + 0.4 * ((i * 3) % 7) / 6.0
+            val = 0.65 + 0.3 * ((i * 5) % 11) / 10.0
+            r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
+            bin_color_map[bn] = f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+
+        fig, ax = plt.subplots(figsize=(4, 4))
+
+        # Draw edges
+        for src, dst, reads in edges:
+            x0, y0 = pos[src]
+            x1, y1 = pos[dst]
+            is_gfa = (src in self._skeleton_contigs
+                       and dst in self._skeleton_contigs
+                       and reads == 0)
+            style = "-" if is_gfa else "--"
+            lw = 1.0 if reads == 0 else min(0.5 + reads * 0.3, 3.0)
+            ax.plot([x0, x1], [y0, y1], style, color="#888888",
+                    linewidth=lw, alpha=0.6, zorder=1)
+
+        # Draw nodes
+        for node, (x, y) in pos.items():
+            cid = self.identities.get(node)
+            comm = cid.community if cid else None
+            color = bin_color_map.get(comm, "#CCCCCC")
+            size = 200 if node == contig_name else 80
+            marker = "*" if node == contig_name else "o"
+            edge_c = "red" if node == contig_name else "black"
+            ax.scatter([x], [y], c=color, s=size, marker=marker,
+                       edgecolors=edge_c, linewidths=0.5, zorder=3)
+            # Label: short contig name
+            label = node.replace("contig_", "c").replace("edge_", "e")
+            ax.text(x, y + 0.06, label, fontsize=4, ha="center", va="bottom",
+                    alpha=0.8, zorder=4)
+
+        # Legend for bins
+        for bn in bin_names[:8]:
+            display = self._display(bn) or bn
+            ax.scatter([], [], c=bin_color_map[bn], s=30,
+                       label=display, edgecolors="black", linewidths=0.3)
+        if None in {self.identities.get(n, None) and self.identities[n].community
+                    for n in visited}:
+            ax.scatter([], [], c="#CCCCCC", s=30, label="unbinned",
+                       edgecolors="black", linewidths=0.3)
+        ax.legend(loc="upper right", fontsize=5, markerscale=0.7)
+
+        ax.set_title(f"Graph: {contig_name} ({hops} hops, {len(visited)} nodes)")
+        ax.axis("off")
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=72, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+
+        return {
+            "image_base64": base64.b64encode(buf.read()).decode(),
+            "image_format": "png",
+            "n_nodes": len(visited),
+            "n_edges": len(edges),
+            "edge_types": {
+                "gfa": sum(1 for _, _, r in edges if r == 0),
+                "read_bridged": sum(1 for _, _, r in edges if r > 0),
+            },
+            "description": (
+                f"Network around {contig_name} ({hops} hops, "
+                f"{len(visited)} nodes, {len(edges)} edges)"
+            ),
+        }
+
     def render_graph_neighborhood(self, contig_name: str, hops: int = 2) -> dict:
-        """Render assembly graph around a contig using Bandage."""
+        """Render assembly graph around a contig.
+
+        Uses Bandage for contigs in the GFA assembly graph, falls back to
+        a matplotlib network diagram for read-bridged-only contigs.
+        """
         c = self.identities.get(contig_name)
         if not c:
             return {"error": f"Unknown contig: {contig_name}"}
         if not c.connections:
             return {"error": f"Contig '{contig_name}' has no graph edges (singleton)"}
-        if contig_name not in self._skeleton_contigs:
-            return {"error": f"Contig '{contig_name}' has read-bridged links only (not in assembly graph)"}
-        if not self._skeleton_gfa or not self._skeleton_gfa.exists():
-            return {"error": "Graph rendering unavailable (no skeleton GFA)"}
-        if not os.path.isfile(BANDAGE_PATH):
-            return {"error": "Bandage not found"}
+
+        # Fall back to matplotlib for read-bridged-only contigs or missing Bandage
+        use_bandage = (
+            contig_name in self._skeleton_contigs
+            and self._skeleton_gfa and self._skeleton_gfa.exists()
+            and os.path.isfile(BANDAGE_PATH)
+        )
+        if not use_bandage:
+            return self._render_network_matplotlib(contig_name, hops)
 
         fd, tmp_png = tempfile.mkstemp(suffix=".png", prefix="nclb_graph_")
         os.close(fd)
@@ -928,7 +1076,7 @@ CONTIG_TOOLS_ANTHROPIC = [
     },
     {
         "name": "render_graph_neighborhood",
-        "description": "Render assembly graph around a contig using Bandage. Returns a PNG image showing node connectivity. Use to see physical graph links between contigs.",
+        "description": "Render graph around a contig. Uses Bandage for GFA-linked contigs, matplotlib network for read-bridged contigs. Nodes colored by bin assignment. Solid edges = GFA links, dashed = read-bridged.",
         "input_schema": {
             "type": "object",
             "properties": {

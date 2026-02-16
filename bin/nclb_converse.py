@@ -171,6 +171,10 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
 
     if tool_name == "render_graph_neighborhood":
         n_nodes = result.get("n_nodes", 0)
+        n_edges = result.get("n_edges", 0)
+        et = result.get("edge_types", {})
+        if et:
+            return f"{n_nodes} nodes, {n_edges} edges ({et.get('gfa', 0)} GFA, {et.get('read_bridged', 0)} read) [IMAGE]"
         return f"{n_nodes} nodes [IMAGE]"
 
     # Fallback

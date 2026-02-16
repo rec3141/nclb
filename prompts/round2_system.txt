@@ -23,7 +23,7 @@ Available tools:
 - get_taxonomy(contig): all taxonomy sources (Kaiju lineage + confidence, SendSketch ANI + reference, Kraken2 classification, rRNA SSU classification), genus-level agreement flag
 - get_bin_metabolism(bin_name): KEGG module completeness profile — metabolic capabilities grouped by category (energy, carbon, nitrogen, sulfur, biosynthesis)
 - render_umap_neighborhood(target, radius=3.0): render UMAP landscape image around a contig or bin — returns a PNG image you can see. Use to visually assess cluster structure and spatial relationships.
-- render_graph_neighborhood(contig, hops=2): render assembly graph image around a contig using Bandage — returns a PNG image showing node connectivity and graph topology.
+- render_graph_neighborhood(contig, hops=2): render graph image around a contig — uses Bandage for GFA-linked contigs, matplotlib network for read-bridged contigs. Nodes colored by bin. Solid edges = GFA, dashed = read-bridged.
 
 These contigs were recognized by binning algorithms but not placed in the
 consensus. Investigate each and find where they belong.
