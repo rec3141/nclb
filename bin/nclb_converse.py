@@ -42,17 +42,10 @@ _PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
 
 def _load_prompt(name: str) -> str:
-    """Load a system prompt from the prompts/ directory."""
+    """Load a prompt from the prompts/ directory. Re-reads on every call so
+    prompts can be edited while the pipeline is running."""
     path = _PROMPT_DIR / name
     return path.read_text().strip()
-
-
-ROUND1_SYSTEM = _load_prompt("round1_system.txt")
-ROUND2_SYSTEM = _load_prompt("round2_system.txt")
-ROUND3_SYSTEM = _load_prompt("round3_system.txt")
-ROUND1_USER = _load_prompt("round1_user.txt")
-ROUND2_USER = _load_prompt("round2_user.txt")
-ROUND3_USER = _load_prompt("round3_user.txt")
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +393,7 @@ def round1_prompt(comm_name: str, comm_data: dict,
     completeness = comm_data.get('completeness') or 0.0
     redundancy = comm_data.get('redundancy') or 0.0
 
-    return ROUND1_USER.format(
+    return _load_prompt("round1_user.txt").format(
         bin_name=shown_name,
         quality_tier=comm_data.get('quality_tier', 'none'),
         n_members=len(comm_data.get('members', [])),
@@ -429,7 +422,7 @@ def round2_prompt(
         else:
             lines.append(f"  {name}: no pre-computed candidates (use find_graph_connections)")
 
-    return ROUND2_USER.format(
+    return _load_prompt("round2_user.txt").format(
         n_contigs=len(contig_names),
         contig_section="\n".join(lines),
     )
@@ -445,7 +438,7 @@ def round3_prompt(clusters: list[dict]) -> str:
             f"Coverage correlation={cl.get('coverage_correlation', 0):.3f}, "
             f"Mean GC={cl.get('mean_gc', 0):.3f}"
         )
-    return ROUND3_USER.format(
+    return _load_prompt("round3_user.txt").format(
         n_clusters=len(clusters),
         cluster_section="\n".join(lines),
     )
@@ -831,7 +824,7 @@ def main():
     # Note: fit scores already computed at startup (line ~737) with current formula
 
     # Build Round 1 system prompt with fit score distribution context
-    r1_system = ROUND1_SYSTEM
+    r1_system = _load_prompt("round1_system.txt")
     if fit_dist:
         r1_system += (
             f"\n\nFit score IQR across all binned contigs: "
@@ -945,7 +938,7 @@ def main():
         prompt = round2_prompt(batch_names, contig_candidates, community_names)
         try:
             result = run_tool_conversation(
-                client, model, ROUND2_SYSTEM, prompt, toolkit,
+                client, model, _load_prompt("round2_system.txt"), prompt, toolkit,
                 max_rounds=args.max_tool_rounds, log_fn=log,
             )
             n_tc = result.pop("_tool_calls", 0)
@@ -1009,7 +1002,7 @@ def main():
         prompt = round3_prompt(clusters)
         try:
             result = run_tool_conversation(
-                client, model, ROUND3_SYSTEM, prompt, toolkit,
+                client, model, _load_prompt("round3_system.txt"), prompt, toolkit,
                 max_rounds=3, log_fn=log,
             )
             result.pop("_tool_calls", None)
