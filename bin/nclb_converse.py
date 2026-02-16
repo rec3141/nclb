@@ -164,6 +164,15 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         n_complete = result.get("n_complete", 0)
         return f"{n} modules ({n_complete} >=75% complete)"
 
+    if tool_name == "render_umap_neighborhood":
+        n_nearby = result.get("n_nearby", 0)
+        n_bins = len(result.get("nearby_bins", []))
+        return f"{n_nearby} contigs, {n_bins} bins [IMAGE]"
+
+    if tool_name == "render_graph_neighborhood":
+        n_nodes = result.get("n_nodes", 0)
+        return f"{n_nodes} nodes [IMAGE]"
+
     # Fallback
     return json.dumps(result, default=str)[:120]
 
@@ -286,11 +295,26 @@ def run_tool_conversation(
                     result_summary = _summarize_tool_result(tc.function.name, result)
                     log_fn(f"    [{tool_calls_total}] {tc.function.name}({args_short}) → {result_summary}")
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps(result, default=str),
-                })
+                # Image-aware tool result: send mixed content for VL models
+                if "image_base64" in result:
+                    img_b64 = result.pop("image_base64")
+                    img_fmt = result.pop("image_format", "png")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": [
+                            {"type": "text", "text": json.dumps(result, default=str)},
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:image/{img_fmt};base64,{img_b64}",
+                            }},
+                        ],
+                    })
+                else:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result, default=str),
+                    })
 
             # Loop detection: if same tools called 3 rounds in a row, break
             round_sig = "|".join(
@@ -819,9 +843,14 @@ def main():
         log(f"[INFO] Loaded Bakta annotations for {len(bakta_annotations):,} contigs")
 
     # --- Create toolkit ---
+    gfa_path = assembly_dir / "assembly_graph.gfa"
     toolkit = ContigToolkit(identities, communities, adjacency,
                             community_names=community_names,
-                            annotations=bakta_annotations)
+                            annotations=bakta_annotations,
+                            gfa_path=gfa_path if gfa_path.exists() else None)
+    if toolkit._skeleton_gfa:
+        skel_size = toolkit._skeleton_gfa.stat().st_size
+        log(f"[INFO] Skeleton GFA: {toolkit._skeleton_gfa} ({skel_size:,} bytes)")
 
     # --- Configure OpenAI client ---
     from openai import OpenAI

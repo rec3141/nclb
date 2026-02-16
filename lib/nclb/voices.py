@@ -12,7 +12,15 @@ Model hierarchy (the wisdom of scale):
 
 from __future__ import annotations
 
+import base64
+import colorsys
+import io
 import json
+import logging
+import os
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -22,6 +30,8 @@ from scipy.stats import pearsonr
 from .identity import ContigIdentity, CommunityProfile
 from .valence import contig_fit_score, tnf_coherence, coverage_coherence
 from .graph import graph_connectivity, find_graph_bridges
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +52,52 @@ def model_for_role(role: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Skeleton GFA: stripped-down graph for fast Bandage rendering
+# ---------------------------------------------------------------------------
+
+BANDAGE_PATH = "/home/grid/apps/Bandage"
+
+
+def _ensure_skeleton_gfa(gfa_path: Path, output_path: Path) -> Path:
+    """Create a lightweight skeleton GFA (header + stub S lines + all L lines).
+
+    Strips sequences from S lines (replaces with ``*``) and only keeps segments
+    that participate in at least one link.  Result is ~150 KB instead of 208 MB.
+    Skips regeneration when the skeleton is newer than the source GFA.
+    """
+    if output_path.exists() and output_path.stat().st_mtime > gfa_path.stat().st_mtime:
+        return output_path
+
+    # First pass: collect contig names that appear in L lines
+    linked_contigs: set[str] = set()
+    l_lines: list[str] = []
+    h_line: str = ""
+    with open(gfa_path) as fh:
+        for line in fh:
+            if line.startswith("L\t"):
+                l_lines.append(line)
+                parts = line.split("\t")
+                if len(parts) >= 4:
+                    linked_contigs.add(parts[1])
+                    linked_contigs.add(parts[3])
+            elif line.startswith("H\t") and not h_line:
+                h_line = line
+
+    # Second pass: write skeleton
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output_path.with_suffix(".tmp")
+    with open(tmp, "w") as out:
+        if h_line:
+            out.write(h_line)
+        for name in sorted(linked_contigs):
+            out.write(f"S\t{name}\t*\n")
+        for l_line in l_lines:
+            out.write(l_line)
+    tmp.rename(output_path)
+    return output_path
+
+
+# ---------------------------------------------------------------------------
 # Tool runtime: functions the LLM can call during conversations
 # ---------------------------------------------------------------------------
 
@@ -59,6 +115,7 @@ class ContigToolkit:
         resonance_map=None,
         community_names: dict[str, str] | None = None,
         annotations: dict[str, list[dict]] | None = None,
+        gfa_path: Path | None = None,
     ):
         self.identities = identities
         self.communities = communities
@@ -75,6 +132,17 @@ class ContigToolkit:
         # community_names: internal_name → festive display name
         self._to_display = community_names or {}
         self._from_display = {v: k for k, v in self._to_display.items()}
+        # Skeleton GFA for Bandage rendering
+        self._skeleton_gfa: Path | None = None
+        if gfa_path and gfa_path.exists():
+            skel_dir = gfa_path.parent.parent / "binning" / "nclb"
+            skel_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self._skeleton_gfa = _ensure_skeleton_gfa(
+                    gfa_path, skel_dir / "skeleton.gfa"
+                )
+            except Exception as e:
+                log.warning("Failed to create skeleton GFA: %s", e)
 
     def _resolve(self, name: str) -> str:
         """Resolve a display name (or internal name) to internal name."""
@@ -456,6 +524,185 @@ class ContigToolkit:
             "categories": categories,
         }
 
+    # ------------------------------------------------------------------
+    # Visual tools (return image_base64 for VL model consumption)
+    # ------------------------------------------------------------------
+
+    def render_umap_neighborhood(self, target: str, radius: float = 3.0) -> dict:
+        """Render cropped UMAP scatter plot around a contig or bin."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        resolved = self._resolve(target)
+
+        # Determine center point
+        comm = self.communities.get(resolved)
+        if comm:
+            # Target is a bin — centroid of members
+            member_ids = [self.identities[m] for m in comm.members
+                          if m in self.identities
+                          and (self.identities[m].landscape_x != 0.0
+                               or self.identities[m].landscape_y != 0.0)]
+            if not member_ids:
+                return {"error": f"No landscape data for bin '{target}'"}
+            cx = np.mean([c.landscape_x for c in member_ids])
+            cy = np.mean([c.landscape_y for c in member_ids])
+            highlight_names = set(comm.members)
+            target_type = "bin"
+        else:
+            c = self.identities.get(target)
+            if not c:
+                return {"error": f"Unknown contig or bin: {target}"}
+            if c.landscape_x == 0.0 and c.landscape_y == 0.0:
+                return {"error": f"No landscape data for contig '{target}'"}
+            cx, cy = c.landscape_x, c.landscape_y
+            highlight_names = {target}
+            target_type = "contig"
+
+        # Collect nearby contigs
+        nearby = []
+        for name, cid in self.identities.items():
+            if cid.landscape_x == 0.0 and cid.landscape_y == 0.0:
+                continue
+            dx = cid.landscape_x - cx
+            dy = cid.landscape_y - cy
+            if dx * dx + dy * dy <= radius * radius:
+                nearby.append(cid)
+
+        if not nearby:
+            return {"error": "No contigs in UMAP radius"}
+
+        # Assign colors per bin (golden-angle HSV)
+        bin_names = sorted({
+            c.community for c in nearby
+            if c.community is not None
+        })
+        bin_color_map: dict[str, tuple] = {}
+        golden_angle = 137.508 / 360.0
+        for i, bn in enumerate(bin_names):
+            hue = (i * golden_angle) % 1.0
+            sat = 0.55 + 0.4 * ((i * 3) % 7) / 6.0
+            val = 0.65 + 0.3 * ((i * 5) % 11) / 10.0
+            bin_color_map[bn] = colorsys.hsv_to_rgb(hue, sat, val)
+
+        fig, ax = plt.subplots(figsize=(5, 5))
+
+        # Background: unbinned contigs as gray dots
+        unbinned = [c for c in nearby if c.community is None]
+        if unbinned:
+            ax.scatter(
+                [c.landscape_x for c in unbinned],
+                [c.landscape_y for c in unbinned],
+                c="#CCCCCC", s=6, alpha=0.4, zorder=1, label=f"unbinned ({len(unbinned)})",
+            )
+
+        # Colored points per bin
+        for bn in bin_names:
+            members = [c for c in nearby if c.community == bn]
+            display = self._display(bn) or bn
+            ax.scatter(
+                [c.landscape_x for c in members],
+                [c.landscape_y for c in members],
+                c=[bin_color_map[bn]], s=15, alpha=0.7, zorder=2,
+                label=f"{display} ({len(members)})",
+            )
+
+        # Highlight target
+        if target_type == "contig":
+            c = self.identities[target]
+            ax.scatter([c.landscape_x], [c.landscape_y],
+                       marker="*", c="red", s=200, zorder=4, edgecolors="black",
+                       linewidths=0.5, label=target)
+        else:
+            for name in highlight_names:
+                c = self.identities.get(name)
+                if c and (c.landscape_x != 0.0 or c.landscape_y != 0.0):
+                    ax.scatter([c.landscape_x], [c.landscape_y],
+                               marker="*", c="red", s=80, zorder=4,
+                               edgecolors="black", linewidths=0.3)
+
+        ax.set_xlim(cx - radius, cx + radius)
+        ax.set_ylim(cy - radius, cy + radius)
+        ax.set_xlabel("UMAP 1")
+        ax.set_ylabel("UMAP 2")
+        ax.set_title(f"UMAP neighborhood: {self._display(resolved) or target}")
+        ax.legend(loc="upper right", fontsize=6, markerscale=0.7)
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+
+        nearby_bins = sorted(
+            bin_names,
+            key=lambda b: -sum(1 for c in nearby if c.community == b),
+        )
+
+        return {
+            "image_base64": base64.b64encode(buf.read()).decode(),
+            "image_format": "png",
+            "n_nearby": len(nearby),
+            "nearby_bins": [self._display(b) or b for b in nearby_bins],
+            "description": (
+                f"UMAP neighborhood (r={radius}) around {target}: "
+                f"{len(nearby)} contigs, {len(bin_names)} bins"
+            ),
+        }
+
+    def render_graph_neighborhood(self, contig_name: str, hops: int = 2) -> dict:
+        """Render assembly graph around a contig using Bandage."""
+        c = self.identities.get(contig_name)
+        if not c:
+            return {"error": f"Unknown contig: {contig_name}"}
+        if not c.connections:
+            return {"error": f"Contig '{contig_name}' has no graph edges (singleton)"}
+        if not self._skeleton_gfa or not self._skeleton_gfa.exists():
+            return {"error": "Graph rendering unavailable (no skeleton GFA)"}
+        if not os.path.isfile(BANDAGE_PATH):
+            return {"error": "Bandage not found"}
+
+        fd, tmp_png = tempfile.mkstemp(suffix=".png", prefix="nclb_graph_")
+        os.close(fd)
+        try:
+            cmd = [
+                BANDAGE_PATH, "image",
+                str(self._skeleton_gfa), tmp_png,
+                "--scope", "aroundnodes",
+                "--nodes", contig_name,
+                "--distance", str(hops),
+                "--names",
+                "--height", "600",
+            ]
+            env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30, env=env,
+            )
+            if proc.returncode != 0:
+                return {"error": f"Bandage failed: {proc.stderr.strip()[:200]}"}
+
+            with open(tmp_png, "rb") as fh:
+                img_bytes = fh.read()
+            if len(img_bytes) < 100:
+                return {"error": "Bandage produced empty image"}
+
+            return {
+                "image_base64": base64.b64encode(img_bytes).decode(),
+                "image_format": "png",
+                "n_nodes": 1 + len(c.connections),
+                "description": (
+                    f"Assembly graph around {contig_name} "
+                    f"({hops} hops, {1 + len(c.connections)} nodes)"
+                ),
+            }
+        except subprocess.TimeoutExpired:
+            return {"error": "Bandage timed out"}
+        except Exception as e:
+            return {"error": f"Graph rendering failed: {e}"}
+        finally:
+            if os.path.exists(tmp_png):
+                os.unlink(tmp_png)
+
     def get_taxonomy(self, contig_name: str) -> dict:
         """All taxonomy sources for a contig."""
         c = self.identities.get(contig_name)
@@ -502,11 +749,17 @@ class ContigToolkit:
             "read_annotations": self.read_annotations,
             "get_taxonomy": self.get_taxonomy,
             "get_bin_metabolism": self.get_bin_metabolism,
+            "render_umap_neighborhood": self.render_umap_neighborhood,
+            "render_graph_neighborhood": self.render_graph_neighborhood,
         }
 
         fn = dispatch_map.get(tool_name)
         if fn is None:
             return {"error": f"Unknown tool: {tool_name}"}
+
+        # Skip cache for render tools (large base64 payloads)
+        if tool_name.startswith("render_"):
+            return fn(**arguments)
 
         # Cache key: (tool_name, sorted argument pairs)
         cache_key = (tool_name, tuple(sorted(arguments.items())))
@@ -645,6 +898,30 @@ CONTIG_TOOLS_ANTHROPIC = [
                 "bin_name": {"type": "string", "description": "Name of the bin"},
             },
             "required": ["bin_name"],
+        },
+    },
+    {
+        "name": "render_umap_neighborhood",
+        "description": "Render UMAP landscape image around a contig or bin. Returns a PNG image you can see. Use to visually assess cluster membership and spatial relationships.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Contig name or bin name"},
+                "radius": {"type": "number", "description": "UMAP radius (default 3.0)", "default": 3.0},
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "render_graph_neighborhood",
+        "description": "Render assembly graph around a contig using Bandage. Returns a PNG image showing node connectivity. Use to see physical graph links between contigs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "contig_name": {"type": "string", "description": "Name of the contig"},
+                "hops": {"type": "integer", "description": "Graph traversal distance (default 2)", "default": 2},
+            },
+            "required": ["contig_name"],
         },
     },
 ]
