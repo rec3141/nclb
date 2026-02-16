@@ -147,6 +147,10 @@ class CommunityProfile:
     coverage_correlation: float = 0.0                 # mean pairwise Pearson
     graph_connectivity: float = 0.0                   # fraction of pairs with edges
 
+    # Per-binner majority label among community members (for recognition signal)
+    # {binner_name: majority_label_or_None} — None if no >50% consensus
+    binner_consensus: dict[str, Optional[str]] = field(default_factory=dict)
+
     # Gene inventory
     marker_gene_inventory: list[str] = field(default_factory=list)
     missing_markers: list[str] = field(default_factory=list)
@@ -1558,6 +1562,27 @@ def build_identities(
         # KEGG module completeness for this bin
         bin_modules = kegg_data.get(bin_name, {})
 
+        # Compute binner_consensus: for each binner, the majority label
+        # among this community's members (only if >50% share that label)
+        binner_consensus: dict[str, Optional[str]] = {}
+        for binner in binner_paths.keys():
+            label_counts: dict[Optional[str], int] = {}
+            for m in members:
+                label = binner_data.get(m, {}).get(binner)
+                label_counts[label] = label_counts.get(label, 0) + 1
+            # Find majority label (excluding None)
+            best_label = None
+            best_count = 0
+            for label, count in label_counts.items():
+                if label is not None and count > best_count:
+                    best_label = label
+                    best_count = count
+            # Only record if >50% of members share this label
+            if best_count > len(members) / 2:
+                binner_consensus[binner] = best_label
+            else:
+                binner_consensus[binner] = None
+
         profile = CommunityProfile(
             name=bin_name,
             source_binner=summary["source"],
@@ -1576,6 +1601,7 @@ def build_identities(
             quality_tier=quality_tier,
             marker_gene_inventory=marker_gene_inventory,
             missing_markers=missing_markers,
+            binner_consensus=binner_consensus,
         )
         communities[bin_name] = profile
 
@@ -1695,6 +1721,24 @@ def seed_communities_from_binner_agreement(
 
         agreement = community_agreement[comm_name]
 
+        # Compute binner_consensus for seed communities
+        seed_binner_consensus: dict[str, Optional[str]] = {}
+        for binner in binner_names:
+            label_counts: dict[Optional[str], int] = {}
+            for m in members:
+                label = identities[m].binner_assignments.get(binner) if m in identities else None
+                label_counts[label] = label_counts.get(label, 0) + 1
+            best_label = None
+            best_count = 0
+            for label, count in label_counts.items():
+                if label is not None and count > best_count:
+                    best_label = label
+                    best_count = count
+            if best_count > len(members) / 2:
+                seed_binner_consensus[binner] = best_label
+            else:
+                seed_binner_consensus[binner] = None
+
         profile = CommunityProfile(
             name=comm_name,
             source_binner=f"seed-{agreement}of{n_binners}",
@@ -1706,6 +1750,7 @@ def seed_communities_from_binner_agreement(
             total_size=total_size,
             n50=n50,
             quality_tier="low",
+            binner_consensus=seed_binner_consensus,
         )
         new_communities[comm_name] = profile
 

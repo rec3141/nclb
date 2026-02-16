@@ -37,9 +37,9 @@ def contig_fit_score(
     base_weights = weights or {
         "tnf": 0.30,        # composition is fundamental
         "coverage": 0.25,   # abundance pattern is strong signal
-        "graph": 0.15,      # graph links are physical evidence
+        "graph": 0.20,      # graph links are physical evidence
         "recognition": 0.15,  # binner consensus carries weight
-        "contribution": 0.15,  # filling gaps is valued
+        "contribution": 0.10,  # filling gaps is supplementary
     }
 
     # --- Compute each signal, tracking which have real data ---
@@ -82,29 +82,31 @@ def contig_fit_score(
     signals["graph"] = graph_frac
     available["graph"] = has_graph
 
-    # Recognition: fraction of binners that agree with this community
+    # Recognition: of binners with a consensus label for this community,
+    # what fraction also placed this contig in that same bin?
     recognition = 0.0
-    has_recog = bool(contig.binner_assignments)
+    n_agree = 0
+    n_checked = 0
+    for binner, majority_label in community.binner_consensus.items():
+        if majority_label is None:
+            continue  # this binner has no consensus for this community
+        n_checked += 1
+        assignment = contig.binner_assignments.get(binner)
+        if assignment == majority_label:
+            n_agree += 1
+    has_recog = n_checked > 0
     if has_recog:
-        n_agree = 0
-        for binner, assignment in contig.binner_assignments.items():
-            if assignment is not None:
-                if community.source_binner in assignment.lower():
-                    if assignment in community.name:
-                        n_agree += 1
-                elif assignment is not None:
-                    n_agree += 0.2
-        total_binners = max(len(contig.binner_assignments), 1)
-        recognition = min(n_agree / total_binners, 1.0)
+        recognition = n_agree / n_checked
     signals["recognition"] = recognition
     available["recognition"] = has_recog
 
-    # Contribution: does contig carry genes the community is missing?
+    # Contribution: does contig carry marker genes the community is missing?
+    # Absolute count capped at 3 — independent of bin quality
     contribution = 0.0
     has_contrib = bool(contig.marker_genes and community.missing_markers)
     if has_contrib:
         overlap = set(contig.marker_genes) & set(community.missing_markers)
-        contribution = len(overlap) / len(community.missing_markers)
+        contribution = min(len(overlap), 3) / 3.0
     signals["contribution"] = contribution
     available["contribution"] = has_contrib
 

@@ -29,7 +29,7 @@ from nclb.identity import (
     ContigIdentity, CommunityProfile,
 )
 from nclb.voices import (
-    ContigToolkit, CONTIG_TOOLS_OPENAI, parse_json_response,
+    ContigToolkit, CONTIG_TOOLS_OPENAI, tools_for_round, parse_json_response,
 )
 from nclb.valence import contig_fit_score, tnf_coherence, coverage_coherence
 
@@ -189,6 +189,7 @@ def run_tool_conversation(
     toolkit: ContigToolkit,
     max_rounds: int = 15,
     log_fn=None,
+    round_name: str | None = None,
 ) -> dict:
     """Run a tool-use conversation loop with an OpenAI-compatible API.
 
@@ -242,7 +243,7 @@ def run_tool_conversation(
             temperature=0.3,
         )
         if not is_final_round:
-            call_kwargs["tools"] = CONTIG_TOOLS_OPENAI
+            call_kwargs["tools"] = tools_for_round(round_name) if round_name else CONTIG_TOOLS_OPENAI
 
         try:
             response = client.chat.completions.create(**call_kwargs)
@@ -980,6 +981,7 @@ def main():
             result = run_tool_conversation(
                 client, model, r1_system, prompt, toolkit,
                 max_rounds=args.max_tool_rounds, log_fn=log,
+                round_name="round1",
             )
             n_releases = len(result.get("release", []))
             n_splits = len(result.get("split", []))
@@ -1050,6 +1052,7 @@ def main():
             result = run_tool_conversation(
                 client, model, _load_prompt("round2_system.txt"), prompt, toolkit,
                 max_rounds=args.max_tool_rounds, log_fn=log,
+                round_name="round2",
             )
             n_tc = result.pop("_tool_calls", 0)
             # Translate festive display names back to internal names
@@ -1114,6 +1117,7 @@ def main():
             result = run_tool_conversation(
                 client, model, _load_prompt("round3_system.txt"), prompt, toolkit,
                 max_rounds=3, log_fn=log,
+                round_name="round3",
             )
             result.pop("_tool_calls", None)
             proposal = {"round": 3, "clusters": clusters, "result": result}

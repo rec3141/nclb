@@ -539,7 +539,7 @@ class ContigToolkit:
     # Visual tools (return image_base64 for VL model consumption)
     # ------------------------------------------------------------------
 
-    def render_umap_neighborhood(self, target: str, radius: float = 3.0) -> dict:
+    def render_umap_neighborhood(self, target: str, radius: float = 1.5) -> dict:
         """Render cropped UMAP scatter plot around a contig or bin."""
         import matplotlib
         matplotlib.use("Agg")
@@ -1069,7 +1069,7 @@ CONTIG_TOOLS_ANTHROPIC = [
             "type": "object",
             "properties": {
                 "target": {"type": "string", "description": "Contig name or bin name"},
-                "radius": {"type": "number", "description": "UMAP radius (default 3.0)", "default": 3.0},
+                "radius": {"type": "number", "description": "UMAP radius (default 1.5)", "default": 1.5},
             },
             "required": ["target"],
         },
@@ -1089,6 +1089,28 @@ CONTIG_TOOLS_ANTHROPIC = [
 ]
 
 # OpenAI-compatible format (for LM Studio, ollama, vLLM, etc.)
+# Per-round tool allow-lists (add new rounds here as needed)
+ROUND_TOOLS = {
+    "round1": {
+        "get_contig_info", "get_graph_neighbors", "get_binner_assignments",
+        "compare_to_bin", "get_bin_info", "find_graph_connections",
+        "read_annotations", "get_taxonomy",
+        "render_umap_neighborhood", "render_graph_neighborhood",
+    },
+    "round2": {
+        "get_contig_info", "get_graph_neighbors", "get_binner_assignments",
+        "compare_to_bin", "get_bin_info", "find_graph_connections",
+        "get_missing_markers", "predict_join_impact",
+        "read_annotations", "get_taxonomy", "get_bin_metabolism",
+        "render_umap_neighborhood", "render_graph_neighborhood",
+    },
+    "round3": {
+        "get_contig_info", "get_graph_neighbors", "get_binner_assignments",
+        "compare_to_bin", "get_bin_info",
+        "render_umap_neighborhood", "render_graph_neighborhood",
+    },
+}
+
 CONTIG_TOOLS_OPENAI = [
     {
         "type": "function",
@@ -1103,6 +1125,14 @@ CONTIG_TOOLS_OPENAI = [
 
 # Backward compat
 CONTIG_TOOLS = CONTIG_TOOLS_ANTHROPIC
+
+
+def tools_for_round(round_name: str) -> list[dict]:
+    """Return OpenAI-format tool definitions for a specific round."""
+    allowed = ROUND_TOOLS.get(round_name)
+    if allowed is None:
+        return CONTIG_TOOLS_OPENAI
+    return [t for t in CONTIG_TOOLS_OPENAI if t["function"]["name"] in allowed]
 
 
 # ---------------------------------------------------------------------------

@@ -153,6 +153,7 @@ def compute_landscape(
         n_neighbors=umap_neighbors,
         min_dist=umap_min_dist,
         random_state=random_state,
+        n_jobs=1,
         metric="euclidean",
     )
     embedding = reducer.fit_transform(features)
