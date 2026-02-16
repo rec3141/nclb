@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
 from nclb.identity import build_identities
 
-RESULTS = Path("/data/danav2/20_mag_assembly/nextflow/results_lorbin_test")
+RESULTS = Path("/data/danav2/nclb/results")
 
 identities, communities = build_identities(
     tnf_path=RESULTS / "assembly" / "tnf.tsv",

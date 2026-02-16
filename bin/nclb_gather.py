@@ -303,7 +303,7 @@ def main():
     log(f"[INFO] {len(adjacency):,} contigs with graph connections")
 
     # --- Seed communities from binner agreement ---
-    log("[INFO] Seeding bins from binner agreement (3+ majority)...")
+    log("[INFO] Seeding bins from binner agreement...")
     new_comms, binner_assigned = seed_communities_from_binner_agreement(identities)
 
     # Load full SCG set for marker gene inventory on seeded communities

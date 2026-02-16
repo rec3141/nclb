@@ -7,8 +7,9 @@ Quick overview:
   Completeness: {completeness}% | Redundancy: {redundancy}%
   Mean fit: {mean_fit} | Min fit: {min_fit}
 
-Members (sorted by fit score):
+Members (sorted by fit score, worst first):
 {members_section}
 
-Use tools to investigate any members you find suspicious.
-Decide which contigs truly belong and which should be released.
+The lowest-scoring members are most likely to be misplaced. Consider calling
+compare_to_bin() on them to understand why their scores are low — the signal
+breakdown often reveals whether it's a composition, coverage, or connectivity issue.

@@ -10,7 +10,7 @@ from nclb.identity import build_identities, load_gfa_graph
 from nclb.valence import contig_fit_score, community_metrics, tnf_coherence, coverage_coherence
 from nclb.graph import graph_connectivity
 
-RESULTS = Path("/data/danav2/20_mag_assembly/nextflow/results_lorbin_test")
+RESULTS = Path("/data/danav2/nclb/results")
 
 identities, communities = build_identities(
     tnf_path=RESULTS / "assembly" / "tnf.tsv",
