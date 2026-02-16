@@ -797,17 +797,22 @@ def main():
         log(f"[INFO] Seeded {len(new_comms)} binner-agreement communities ({len(binner_assigned):,} contigs)")
     log(f"[INFO] Total: {len(identities):,} contigs, {len(communities)} communities")
 
-    # Compute fit scores for binned contigs
+    # Compute fit scores for DAS Tool binned contigs (not seed communities —
+    # seed bins are provisional and tautologically coherent)
     from nclb.valence import contig_fit_score as cv
+    seed_community_names = set(new_comms.keys()) if new_comms else set()
     for name, c in identities.items():
-        if c.community and c.community in communities:
+        if c.community and c.community in communities and c.community not in seed_community_names:
             c.fit_score = cv(c, communities[c.community], adjacency)
 
     # Compute fit score distributions per quality tier for LLM context
+    # (seed communities excluded — their fit scores are not meaningful)
     from collections import defaultdict
     tier_fits: dict[str, list[float]] = defaultdict(list)
     for c in identities.values():
-        if c.community and c.fit_score is not None and c.community in communities:
+        if (c.community and c.fit_score is not None
+                and c.community in communities
+                and c.community not in seed_community_names):
             tier = communities[c.community].quality_tier
             tier_fits[tier].append(c.fit_score)
 
@@ -924,7 +929,7 @@ def main():
     # Note: fit scores already computed at startup (line ~737) with current formula
 
     import random
-    comm_order = list(communities.keys())
+    comm_order = [k for k in communities.keys() if k not in seed_community_names]
     random.shuffle(comm_order)
     for comm_name in comm_order:
         comm = communities[comm_name]
