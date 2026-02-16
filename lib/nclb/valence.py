@@ -145,7 +145,7 @@ def community_metrics(
         return {
             "mean_fit": 0.0,
             "min_fit": 0.0,
-            "wholeness": community.completeness,
+            "completeness": community.completeness,
             "purity": 100.0 - community.redundancy,
             "collective_fit": 0.0,
             "n_uneasy": 0,
@@ -157,7 +157,7 @@ def community_metrics(
     return {
         "mean_fit": mean_v,
         "min_fit": min_v,
-        "wholeness": community.completeness,
+        "completeness": community.completeness,
         "purity": 100.0 - community.redundancy,
         "collective_fit": mean_v * (1.0 - community.redundancy / 100.0),
         "n_uneasy": sum(1 for v in member_scores if v < 0.0),

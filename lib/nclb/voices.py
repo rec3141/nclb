@@ -616,7 +616,7 @@ def round1_prompt(community: dict, uneasy: list[dict]) -> str:
 Bin state:
   Members: {community.get('n_members', len(community.get('members', [])))}
   Total size: {community['total_size']:,} bp
-  Wholeness: {community['completeness']:.1f}% complete
+  Completeness: {community['completeness']:.1f}%
   Redundancy: {community['redundancy']:.1f}%
   TNF coherence: {community['tnf_coherence']:.4f}
   Coverage correlation: {community['coverage_correlation']:.4f}

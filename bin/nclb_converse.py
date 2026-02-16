@@ -96,8 +96,8 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
     if tool_name == "compare_to_bin":
         cov = result.get('cov_r')
         graph = result.get('graph_frac')
-        cov_s = f"{cov:.3f}" if cov is not None else "N/A"
-        graph_s = f"{graph:.3f}" if graph is not None else "N/A"
+        cov_s = f"{cov:.3f}" if cov is not None else "NA"
+        graph_s = f"{graph:.3f}" if graph is not None else "NA"
         gc_z = result.get('gc_z', 0)
         tnf_z = result.get('tnf_z', 0)
         return (
@@ -390,7 +390,7 @@ def round1_prompt(comm_name: str, comm_data: dict,
     # Show all members sorted by fit score (worst first)
     score_lines = []
     for name, score in sorted(member_scores, key=lambda x: (x[1] is None, x[1] or 0)):
-        s = f"{score:+.3f}" if score is not None else "N/A"
+        s = f"{score:+.3f}" if score is not None else "NA"
         score_lines.append(f"  {name}: {s}")
     members_section = "\n".join(score_lines)
 
@@ -704,6 +704,29 @@ def main():
         for contig, comm_name in binner_assigned.items():
             identities[contig].community = comm_name
             identities[contig].membership_type = "core"
+        # Compute marker gene inventory for seeded communities
+        from nclb.identity import load_scg_assignments as _load_scg
+        _, full_scg_set = _load_scg(
+            bacteria_scg if bacteria_scg.exists() else None,
+            archaea_scg if archaea_scg.exists() else None,
+        )
+        for comm in new_comms.values():
+            inventory = set()
+            for m in comm.members:
+                mid = identities.get(m)
+                if mid:
+                    inventory.update(mid.marker_genes)
+            comm.marker_gene_inventory = sorted(inventory)
+            comm.missing_markers = sorted(full_scg_set - inventory) if full_scg_set else []
+            if full_scg_set:
+                comm.completeness = round(100.0 * len(inventory) / len(full_scg_set), 2)
+                c = comm.completeness
+                comm.quality_tier = (
+                    "excellent" if c >= 90 else
+                    "high" if c >= 80 else
+                    "good" if c >= 70 else
+                    "fair" if c >= 50 else "low"
+                )
         communities.update(new_comms)
         log(f"[INFO] Seeded {len(new_comms)} binner-agreement communities ({len(binner_assigned):,} contigs)")
     log(f"[INFO] Total: {len(identities):,} contigs, {len(communities)} communities")

@@ -886,7 +886,7 @@ def map_macsyfinder_to_contigs(
             contig_systems[contig][sys_id] = {
                 "sys_id": sys_id,
                 "model": sys_info.get("model", hit["model"]),
-                "wholeness": sys_info.get("wholeness", hit["wholeness"]),
+                "path_completeness": sys_info.get("wholeness", hit["wholeness"]),
                 "genes": [],
             }
         contig_systems[contig][sys_id]["genes"].append(hit["gene_name"])
