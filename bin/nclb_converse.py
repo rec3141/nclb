@@ -884,19 +884,19 @@ def main():
 
     # Note: fit scores already computed at startup (line ~737) with current formula
 
-    # Build Round 1 system prompt with fit score distribution context
-    r1_system = _load_prompt("round1_system.txt")
-    if fit_dist:
-        r1_system += (
-            f"\n\nFit score IQR across all binned contigs: "
-            f"[{fit_dist['p25']:+.3f}, {fit_dist['p75']:+.3f}]"
-        )
-
     import random
     comm_order = list(communities.keys())
     random.shuffle(comm_order)
     for comm_name in comm_order:
         comm = communities[comm_name]
+
+        # Re-read system prompt each iteration (hot-editable)
+        r1_system = _load_prompt("round1_system.txt")
+        if fit_dist:
+            r1_system += (
+                f"\n\nFit score IQR across all binned contigs: "
+                f"[{fit_dist['p25']:+.3f}, {fit_dist['p75']:+.3f}]"
+            )
 
         # JIT: compute coherence and build data dict per-bin (avoids 3+ min startup)
         ensure_coherence(comm)
