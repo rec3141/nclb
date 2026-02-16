@@ -366,6 +366,8 @@ class ContigToolkit:
         # Assembly stats
         member_sizes = [self.identities[m].size for m in comm.members if m in self.identities]
         largest_contig = max(member_sizes) if member_sizes else 0
+        # Single redundancy value: CheckM2 if available, DAS Tool SCG otherwise
+        redund = comm.contamination if comm.contamination > 0 else comm.redundancy
         d = {
             "name": self._display(comm.name),
             "source_binner": comm.source_binner,
@@ -376,8 +378,7 @@ class ContigToolkit:
             "gc": round(comm.mean_gc, 4),
             "gc_sd": round(comm.gc_stdev, 4),
             "completeness": round(comm.completeness, 2),
-            "contamination": round(comm.contamination, 2),
-            "redundancy": round(comm.redundancy, 2),
+            "redundancy": round(redund, 2),
             "tier": comm.quality_tier,
             "tnf_coh": round(comm.tnf_coherence, 4),
             "cov_cor": round(comm.coverage_correlation, 4),

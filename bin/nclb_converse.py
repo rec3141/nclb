@@ -119,7 +119,7 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
             f"{result.get('total_length', 0):,}bp, "
             f"N50={result.get('n50', 0):,}, "
             f"{result.get('completeness', 0):.0f}% complete, "
-            f"{result.get('contamination', 0):.1f}% contam, "
+            f"{result.get('redundancy', 0):.1f}% redundancy, "
             f"{result.get('tier', '?')}"
         )
 
