@@ -847,9 +847,10 @@ def main():
 
     def ensure_coherence(comm):
         """Compute coherence metrics on first access."""
-        if comm.tnf_coherence == 0.0 and len(comm.members) > 1:
+        if comm.coverage_correlation == 0.0 and len(comm.members) > 1:
             members = [identities[n] for n in comm.members if n in identities]
-            comm.tnf_coherence, comm.tnf_sim_stdev = tnf_coherence(members)
+            if comm.tnf_coherence == 0.0:
+                comm.tnf_coherence, comm.tnf_sim_stdev = tnf_coherence(members)
             comm.coverage_correlation = coverage_coherence(members)
             comm.graph_connectivity = graph_connectivity(comm.members, adjacency)
 

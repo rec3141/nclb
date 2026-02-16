@@ -46,12 +46,18 @@ def contig_fit_score(
     signals = {}  # name → value (0-1)
     available = {}  # name → True if signal has data
 
-    # TNF similarity: cosine similarity of contig TNF to community centroid
+    # TNF similarity: z-score normalized to bin's own variance
+    # A contig at the bin mean scores 1.0; 3+ stdevs below scores 0.0
     tnf_sim = 0.0
     has_tnf = community.tnf_centroid is not None and contig.tnf is not None
     if has_tnf:
         cos_dist = cosine_distance(contig.tnf, community.tnf_centroid)
-        tnf_sim = 1.0 - cos_dist
+        raw_sim = 1.0 - cos_dist
+        if community.tnf_sim_stdev > 0:
+            z = (community.tnf_coherence - raw_sim) / community.tnf_sim_stdev
+            tnf_sim = max(0.0, 1.0 - z / 3.0)
+        else:
+            tnf_sim = raw_sim
     signals["tnf"] = tnf_sim
     available["tnf"] = has_tnf
 

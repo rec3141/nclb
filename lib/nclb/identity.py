@@ -1583,6 +1583,14 @@ def build_identities(
         tnf_centroid = member_tnf.mean(axis=0) if len(member_tnf) > 0 else None
         mean_coverage = member_cov.mean(axis=0) if len(member_cov) > 0 else None
 
+        # Precompute TNF similarity stats for z-score normalization in fit scores
+        _tnf_mean, _tnf_stdev = 0.0, 0.0
+        if tnf_centroid is not None and len(member_tnf) >= 2:
+            from scipy.spatial.distance import cosine as _cos
+            sims = [1.0 - _cos(row, tnf_centroid) for row in member_tnf]
+            _tnf_mean = float(np.mean(sims))
+            _tnf_stdev = float(np.std(sims))
+
         checkm2 = checkm2_data.get(bin_name, {})
 
         completeness = summary["completeness"]
@@ -1664,6 +1672,8 @@ def build_identities(
             redundancy=summary["redundancy"],
             contamination=checkm2.get("contamination", 0.0),
             checkm2_completeness=checkm2.get("completeness", 0.0),
+            tnf_coherence=_tnf_mean,
+            tnf_sim_stdev=_tnf_stdev,
             kegg_modules=bin_modules,
             quality_tier=quality_tier,
             marker_gene_inventory=marker_gene_inventory,
