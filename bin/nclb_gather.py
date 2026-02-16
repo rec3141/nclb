@@ -215,7 +215,7 @@ def main():
         log("[INFO] No CheckV quality data found")
         checkv_quality_path = None
 
-    # Optional Kaiju taxonomy
+    # Optional taxonomy sources
     taxonomy_dir = results / "taxonomy"
     kaiju_taxonomy_path = taxonomy_dir / "kaiju" / "kaiju_contigs.tsv"
     if kaiju_taxonomy_path.exists():
@@ -223,6 +223,18 @@ def main():
     else:
         log("[INFO] No Kaiju taxonomy data found")
         kaiju_taxonomy_path = None
+
+    sendsketch_taxonomy_path = taxonomy_dir / "sendsketch" / "sendsketch_contigs.tsv"
+    if sendsketch_taxonomy_path.exists():
+        log(f"[INFO] Found SendSketch taxonomy data: {sendsketch_taxonomy_path}")
+    else:
+        sendsketch_taxonomy_path = None
+
+    kraken2_taxonomy_path = taxonomy_dir / "kraken2" / "kraken2_contigs.tsv"
+    if kraken2_taxonomy_path.exists():
+        log(f"[INFO] Found Kraken2 taxonomy data: {kraken2_taxonomy_path}")
+    else:
+        kraken2_taxonomy_path = None
 
     # Optional IntegronFinder integrons
     integron_path = mge_dir / "integrons" / "integrons.tsv"
@@ -272,6 +284,12 @@ def main():
         sys.exit(1)
     log(f"[INFO] Found {len(binner_paths)} binners: {', '.join(sorted(binner_paths))}")
 
+    # Eukaryotic classification (Tiara + Whokaryote consensus)
+    eukaryotic_path = results / "eukaryotic" / "consensus" / "contig_classifications.tsv"
+
+    # Bakta full-db annotation
+    bakta_path = results / "annotation_bakta" / "annotation.tsv"
+
     # rRNA, metabolism, MetaEuk, KEGG modules
     rrna_path = results / "taxonomy" / "rrna" / "rrna_contigs.tsv"
     metabolism_path = results / "metabolism" / "merged" / "merged_annotations.tsv"
@@ -293,6 +311,8 @@ def main():
         plasmid_summary_path=plasmid_summary_path,
         checkv_quality_path=checkv_quality_path,
         kaiju_taxonomy_path=kaiju_taxonomy_path,
+        sendsketch_taxonomy_path=sendsketch_taxonomy_path,
+        kraken2_taxonomy_path=kraken2_taxonomy_path,
         integron_path=integron_path,
         genomic_island_path=island_path,
         macsyfinder_path=msf_path,
@@ -300,6 +320,8 @@ def main():
         prokka_gff_path=prokka_gff_path,
         bacteria_scg_path=bacteria_scg if bacteria_scg.exists() else None,
         archaea_scg_path=archaea_scg if archaea_scg.exists() else None,
+        eukaryotic_path=eukaryotic_path if eukaryotic_path.exists() else None,
+        bakta_tsv_path=bakta_path if bakta_path.exists() else None,
         rrna_path=rrna_path if rrna_path.exists() else None,
         metabolism_path=metabolism_path if metabolism_path.exists() else None,
         metaeuk_gff_path=metaeuk_gff_path if metaeuk_gff_path.exists() else None,

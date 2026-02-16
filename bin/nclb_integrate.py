@@ -159,17 +159,30 @@ def main():
 
     # Taxonomy
     kaiju_path = results / "taxonomy" / "kaiju" / "kaiju_contigs.tsv"
+    sendsketch_path = results / "taxonomy" / "sendsketch" / "sendsketch_contigs.tsv"
+    kraken2_path = results / "taxonomy" / "kraken2" / "kraken2_contigs.tsv"
 
-    # Integrons, genomic islands, secretion systems
+    # Integrons, genomic islands, secretion/defense systems
     integron_path = mge_dir / "integrons" / "integrons.tsv"
     island_path = mge_dir / "genomic_islands" / "genomic_islands.tsv"
     msf_path = mge_dir / "macsyfinder" / "all_systems.tsv"
+    df_path = mge_dir / "defensefinder" / "genes.tsv"
     prokka_gff_path = None
     annotation_dir = results / "annotation" / "prokka"
     if annotation_dir.exists():
         gffs = sorted(annotation_dir.glob("*/*.gff")) + sorted(annotation_dir.glob("*.gff"))
         if gffs:
             prokka_gff_path = gffs[-1]
+
+    # SCG files from DAS Tool
+    bacteria_scg = binning_dir / "dastool" / "bacteria.scg"
+    archaea_scg = binning_dir / "dastool" / "archaea.scg"
+
+    # Eukaryotic classification
+    eukaryotic_path = results / "eukaryotic" / "consensus" / "contig_classifications.tsv"
+
+    # Bakta full-db annotation
+    bakta_path = results / "annotation_bakta" / "annotation.tsv"
 
     # rRNA, metabolism, MetaEuk, KEGG modules
     rrna_path = results / "taxonomy" / "rrna" / "rrna_contigs.tsv"
@@ -190,10 +203,17 @@ def main():
         plasmid_summary_path=plasmid_path if plasmid_path.exists() else None,
         checkv_quality_path=checkv_path if checkv_path.exists() else None,
         kaiju_taxonomy_path=kaiju_path if kaiju_path.exists() else None,
+        sendsketch_taxonomy_path=sendsketch_path if sendsketch_path.exists() else None,
+        kraken2_taxonomy_path=kraken2_path if kraken2_path.exists() else None,
         integron_path=integron_path if integron_path.exists() else None,
         genomic_island_path=island_path if island_path.exists() else None,
         macsyfinder_path=msf_path if msf_path.exists() else None,
+        defensefinder_path=df_path if df_path.exists() else None,
         prokka_gff_path=prokka_gff_path,
+        bacteria_scg_path=bacteria_scg if bacteria_scg.exists() else None,
+        archaea_scg_path=archaea_scg if archaea_scg.exists() else None,
+        eukaryotic_path=eukaryotic_path if eukaryotic_path.exists() else None,
+        bakta_tsv_path=bakta_path if bakta_path.exists() else None,
         rrna_path=rrna_path if rrna_path.exists() else None,
         metabolism_path=metabolism_path if metabolism_path.exists() else None,
         metaeuk_gff_path=metaeuk_gff_path if metaeuk_gff_path.exists() else None,
