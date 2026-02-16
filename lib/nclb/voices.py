@@ -94,6 +94,11 @@ def _ensure_skeleton_gfa(gfa_path: Path, output_path: Path) -> Path:
         for l_line in l_lines:
             out.write(l_line)
     tmp.rename(output_path)
+
+    # Write companion set file for fast membership checks
+    contigs_path = output_path.with_suffix(".contigs")
+    contigs_path.write_text("\n".join(sorted(linked_contigs)) + "\n")
+
     return output_path
 
 
@@ -134,6 +139,7 @@ class ContigToolkit:
         self._from_display = {v: k for k, v in self._to_display.items()}
         # Skeleton GFA for Bandage rendering
         self._skeleton_gfa: Path | None = None
+        self._skeleton_contigs: set[str] = set()
         if gfa_path and gfa_path.exists():
             skel_dir = gfa_path.parent.parent / "binning" / "nclb"
             skel_dir.mkdir(parents=True, exist_ok=True)
@@ -141,6 +147,11 @@ class ContigToolkit:
                 self._skeleton_gfa = _ensure_skeleton_gfa(
                     gfa_path, skel_dir / "skeleton.gfa"
                 )
+                contigs_path = self._skeleton_gfa.with_suffix(".contigs")
+                if contigs_path.exists():
+                    self._skeleton_contigs = set(
+                        contigs_path.read_text().strip().split("\n")
+                    )
             except Exception as e:
                 log.warning("Failed to create skeleton GFA: %s", e)
 
@@ -658,6 +669,8 @@ class ContigToolkit:
             return {"error": f"Unknown contig: {contig_name}"}
         if not c.connections:
             return {"error": f"Contig '{contig_name}' has no graph edges (singleton)"}
+        if contig_name not in self._skeleton_contigs:
+            return {"error": f"Contig '{contig_name}' has read-bridged links only (not in assembly graph)"}
         if not self._skeleton_gfa or not self._skeleton_gfa.exists():
             return {"error": "Graph rendering unavailable (no skeleton GFA)"}
         if not os.path.isfile(BANDAGE_PATH):
