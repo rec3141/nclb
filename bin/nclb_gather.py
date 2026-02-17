@@ -33,10 +33,17 @@ from nclb.landscape import (
 
 
 def find_binner_paths(binning_dir: Path) -> dict[str, Path]:
-    """Auto-discover binner contig_bins.tsv files."""
+    """Auto-discover binner contig_bins.tsv files.
+
+    Checks for both naming conventions:
+      - {name}_bins.tsv  (current Nextflow output name)
+      - contig_bins.tsv  (legacy publishDir saveAs name)
+    """
     binners = {}
     for name in ["semibin", "metabat", "maxbin", "lorbin", "comebin"]:
-        tsv = binning_dir / name / "contig_bins.tsv"
+        tsv = binning_dir / name / f"{name}_bins.tsv"
+        if not tsv.exists():
+            tsv = binning_dir / name / "contig_bins.tsv"
         if tsv.exists():
             binners[name] = tsv
     return binners
